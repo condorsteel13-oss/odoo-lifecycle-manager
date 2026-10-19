@@ -1,0 +1,12 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { createServer } from 'vite';
+import { build } from 'esbuild';
+import electron from 'electron';
+const server = await createServer();
+await server.listen();
+await build({ entryPoints: ['electron/main.ts', 'electron/preload.ts'], outdir: 'dist-electron', outExtension: { '.js': '.cjs' }, bundle: true, platform: 'node', format: 'cjs', external: ['electron', 'playwright', 'playwright-core'] });
+const child: ChildProcess = spawn(electron as unknown as string, ['.', '--dev'], { stdio: 'inherit', env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined } });
+const stop = async () => { child.kill(); await server.close(); process.exit(); };
+child.on('exit', () => { void stop(); });
+process.on('SIGINT', () => { void stop(); });
+process.on('SIGTERM', () => { void stop(); });

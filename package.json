@@ -1,0 +1,93 @@
+{
+  "name": "odoo-lifecycle-manager",
+  "productName": "Odoo Lifecycle Manager",
+  "version": "1.5.1",
+  "description": "Odoo Online discovery, expiry rules and database lifecycle actions with Safe mode",
+  "author": "condorsteel13-oss",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "tsx scripts/dev.ts",
+    "build": "tsc --noEmit && vite build && node scripts/build-electron.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "playwright test",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:integration",
+    "browser:install": "PLAYWRIGHT_BROWSERS_PATH=./browser-binaries playwright install chromium",
+    "start": "electron .",
+    "package:mac": "npm run build && electron-builder --mac --universal --publish never",
+    "package:dir": "npm run build && electron-builder --mac --universal --dir --publish never",
+    "check:public-login": "tsx scripts/check-public-login.ts"
+  },
+  "dependencies": {
+    "cheerio": "1.2.0",
+    "lucide-react": "1.59.0",
+    "playwright": "1.64.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "zod": "4.6.7"
+  },
+  "build": {
+    "appId": "local.odoo.lifecycle-manager",
+    "productName": "Odoo Lifecycle Manager",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/*.cjs",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/playwright*/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-electron/chrome-background",
+        "to": "chrome-background"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": null,
+      "icon": "assets/icon.png",
+      "minimumSystemVersion": "13.0"
+    },
+    "dmg": {
+      "title": "Odoo Lifecycle Manager"
+    },
+    "artifactName": "Odoo-Lifecycle-Manager-${version}-${arch}.${ext}"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "electron": "44.9.0",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2",
+    "tailwindcss": "4.3.3",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "homepage": "https://github.com/condorsteel13-oss/odoo-lifecycle-manager",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/condorsteel13-oss/odoo-lifecycle-manager.git"
+  },
+  "bugs": {
+    "url": "https://github.com/condorsteel13-oss/odoo-lifecycle-manager/issues"
+  }
+}

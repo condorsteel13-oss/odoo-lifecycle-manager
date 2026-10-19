@@ -1,0 +1,21 @@
+node_modules/
+dist/
+dist-electron/
+release/
+browser-binaries/
+test-results/
+playwright-report/
+.local-data/
+.env*
+.DS_Store
+
+# Private browser/session data and local diagnostics must never be published.
+chrome-profile*/
+user-data/
+*.enc
+*.pem
+*.p12
+*.key
+*.log
+state.json
+state.corrupt-*.json
