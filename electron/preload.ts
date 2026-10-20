@@ -15,6 +15,7 @@ const api: AppAPI = {
   cancelLive: () => ipcRenderer.invoke('app:live-cancel'),
   verifyCopy: id => ipcRenderer.invoke('app:live-verify',id),
   closeRemovedCopy: input => ipcRenderer.invoke('app:live-close-removed-copy',input),
+  retainCopy: id => ipcRenderer.invoke('app:live-retain-copy',id),
   activateCopy: id => ipcRenderer.invoke('app:live-activate',id),
   readActivationEmail: id => ipcRenderer.invoke('app:live-read-email',id),
   state: () => ipcRenderer.invoke('app:state'), connect: () => ipcRenderer.invoke('app:connect'),

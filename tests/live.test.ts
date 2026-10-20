@@ -12,7 +12,7 @@ function target(name='fixture',id=uuid,parentUuid:string|null=null):LiveInspecti
 function setup(){
  let records:LiveRecord[]=[];let original=target(),copy=target('fixture-copy',copyUuid,uuid);let hasCopy=false;
  const writes:string[]=[];
- const browser:LiveConnection={activation:vi.fn(async()=>({pending:false,activated:true,userEmail:'user@example.com',recipientEmail:'user@example.com'})),sendActivation:vi.fn(async()=>{}),activateFromEmail:vi.fn(async()=>{}),checkCopyName:vi.fn(async()=>{}),liveList:vi.fn(async()=>[{database:original.database,uuid,parentUuid:null},...(hasCopy?[{database:copy.database,uuid:copyUuid,parentUuid:uuid}]:[])]),inspectLive:vi.fn(async id=>structuredClone(id===original.database.id?original:copy)),duplicateLive:vi.fn(async()=>{writes.push('duplicate');hasCopy=true;}),deleteLive:vi.fn(async()=>{writes.push('delete');vi.mocked(browser.liveList).mockResolvedValue([{database:copy.database,uuid:copyUuid,parentUuid:uuid}]);})};
+ const browser:LiveConnection={activation:vi.fn(async()=>({pending:false,activated:true,userEmail:'user@example.com',recipientEmail:'user@example.com'})),sendActivation:vi.fn(async()=>{}),resumeActivation:vi.fn(async()=>{}),activateFromEmail:vi.fn(async()=>{}),checkCopyName:vi.fn(async()=>{}),liveList:vi.fn(async()=>[{database:original.database,uuid,parentUuid:null},...(hasCopy?[{database:copy.database,uuid:copyUuid,parentUuid:uuid}]:[])]),inspectLive:vi.fn(async id=>structuredClone(id===original.database.id?original:copy)),duplicateLive:vi.fn(async()=>{writes.push('duplicate');hasCopy=true;}),deleteLive:vi.fn(async()=>{writes.push('delete');vi.mocked(browser.liveList).mockResolvedValue([{database:copy.database,uuid:copyUuid,parentUuid:uuid}]);})};
  const save=vi.fn(async(next:LiveRecord[])=>{writes.push(next[0].phase);records=structuredClone(next);});const confirm=vi.fn(async()=>true);
  const service=new LiveService(browser,()=>records,save,()=>true,confirm);
  const duplicate=async()=>{const review=await service.prepareDuplicate(original.database.id,'fixture-copy');await service.commit({ticket:review.ticket,typedName:'fixture',acknowledged:true});};
@@ -20,6 +20,39 @@ function setup(){
  return {service,browser,save,confirm,writes,duplicate,deletion,records:()=>records,original,copy,setCopy:(value:LiveInspection)=>{copy=value;},setOriginal:(value:LiveInspection)=>{original=value;}};
 }
 afterEach(()=>vi.useRealTimers());
+describe('keeping both databases after a verified copy',()=>{
+ it('closes locally, invalidates deletion review, and requires a fresh creation confirmation',async()=>{
+  const f=setup();await f.duplicate();await f.service.verifyCopy(f.records()[0].id);
+  const old=structuredClone(f.records()[0]),deletion=await f.deletion();
+  await f.service.retainCopy(old.id);
+  expect(f.records()[0]).toMatchObject({id:old.id,phase:'copy-retained',copyUuid,retainedAt:expect.any(String),activationVerifiedAt:old.activationVerifiedAt});
+  await expect(f.service.commit(deletion)).rejects.toThrow(/invalid/);
+  await expect(f.service.prepareDelete(old.id)).rejects.toThrow();
+  await expect(f.service.authorizeWorkflow(old.id,'guided')).rejects.toThrow();
+  await expect(f.service.verifyCopy(old.id)).rejects.toThrow();
+  await expect(f.service.startActivation(old.id)).rejects.toThrow();
+  const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm);
+  await expect(restarted.prepareDuplicate(f.original.database.id,'fixture-copy')).rejects.toThrow(/already exists/);
+  const review=await restarted.prepareDuplicate(f.original.database.id,'fixture-new-copy');
+  expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);
+  await restarted.commit({ticket:review.ticket,typedName:'fixture',acknowledged:true});
+  expect(f.confirm).toHaveBeenCalledTimes(2);
+  expect(f.records()).toHaveLength(2);expect(f.records()[1].phase).toBe('copy-retained');
+  expect(f.browser.deleteLive).not.toHaveBeenCalled();expect(f.browser.sendActivation).not.toHaveBeenCalled();expect(f.browser.activateFromEmail).not.toHaveBeenCalled();
+ });
+ it('does not close an uncertain or unverified creation',async()=>{
+  const f=setup();await f.duplicate();
+  await expect(f.service.retainCopy(f.records()[0].id)).rejects.toThrow(/Verify/);
+  expect(f.records()[0].phase).toBe('awaiting-copy');expect(f.browser.deleteLive).not.toHaveBeenCalled();
+ });
+ it('rechecks both identities and completed activation before closing',async()=>{
+  const f=setup();await f.duplicate();await f.service.verifyCopy(f.records()[0].id);
+  f.setOriginal({...f.original,uuid:copyUuid});await expect(f.service.retainCopy(f.records()[0].id)).rejects.toThrow(/identity/);
+  f.setOriginal(f.original);vi.mocked(f.browser.activation).mockResolvedValue({pending:true,activated:false,userEmail:'user@example.com',recipientEmail:'user@example.com'});
+  await expect(f.service.retainCopy(f.records()[0].id)).rejects.toThrow(/activation/);
+  expect(f.records()[0].phase).toBe('copy-verified');expect(f.browser.deleteLive).not.toHaveBeenCalled();
+ });
+});
 describe('manual live lifecycle safety boundary',()=>{
  it('preparation is read-only; duplicate and delete each need native confirmation and durable intent',async()=>{
   const f=setup();const review=await f.service.prepareDuplicate(f.original.database.id,'fixture-copy');
@@ -63,6 +96,37 @@ describe('Manage live metadata contract',()=>{
 
 
 describe('activation lifecycle safeguards',()=>{
+ it.each(['activation','expiry','expiry disagreement'])('does not treat completed redirects as proof of %s verification',async kind=>{
+  const f=setup();await f.duplicate();const id=f.records()[0].id;
+  const info={pending:true,activated:false,userEmail:'user@example.com',recipientEmail:'user@example.com'};
+  vi.mocked(f.browser.activation).mockResolvedValue(info);await f.service.startActivation(id);
+  vi.mocked(f.browser.activateFromEmail).mockImplementation(async()=>{
+   if(kind!=='activation')vi.mocked(f.browser.activation).mockResolvedValue({...info,pending:false,activated:true,...(kind==='expiry disagreement'?{expiresAt:new Date(Date.now()+3*86400000).toISOString()}:{})});
+   if(kind==='expiry')f.setCopy({...f.copy,database:{...f.copy.database,remainingDays:0}});
+  });
+  const read=vi.fn(async()=>'https://www.odoo.com/odoo-enterprise/confirm-database/fixture-copy/'+('x'.repeat(140))+'?username=user%40example.com&email=user%40example.com&country_id=38');
+  await expect(f.service.completeActivation(id,read)).rejects.toThrow();
+  expect(f.records()[0].activation?.completion).toBe('complete');
+  expect(f.records()[0].verifiedAt).toBeNull();
+  await expect(f.service.prepareDelete(id)).rejects.toThrow();
+  expect(f.browser.deleteLive).not.toHaveBeenCalled();
+ });
+ it('blocks deletion on an incomplete handoff despite activated status and resumes without rereading email',async()=>{
+  const f=setup();await f.duplicate();const id=f.records()[0].id;
+  const info={pending:true,activated:false,userEmail:'user@example.com',recipientEmail:'user@example.com'};
+  vi.mocked(f.browser.activation).mockResolvedValue(info);await f.service.startActivation(id);
+  const read=vi.fn(async()=>'https://www.odoo.com/odoo-enterprise/confirm-database/fixture-copy/'+('x'.repeat(140))+'?username=user%40example.com&email=user%40example.com&country_id=38');
+  vi.mocked(f.browser.activateFromEmail).mockRejectedValue(new Error('handoff pending'));
+  await expect(f.service.completeActivation(id,read)).rejects.toThrow();
+  vi.mocked(f.browser.activation).mockResolvedValue({...info,pending:false,activated:true});
+  await expect(f.service.verifyCopy(id)).rejects.toThrow(/handoff/);
+  expect(f.records()[0]).toMatchObject({phase:'activation-pending',activation:{completion:'pending'}});
+  await expect(f.service.prepareDelete(id)).rejects.toThrow();
+  await f.service.completeActivation(id,read);
+  expect(f.records()[0]).toMatchObject({phase:'copy-verified',activation:{completion:'complete'}});
+  expect(read).toHaveBeenCalledTimes(1);expect(f.browser.activateFromEmail).toHaveBeenCalledTimes(1);
+  expect(f.browser.resumeActivation).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).not.toHaveBeenCalled();
+ });
  const pending={pending:true,activated:false,userEmail:'current@example.com',recipientEmail:'previous@example.com'};
  it('sends once to the current user when the recipient differs, including across restarts',async()=>{const f=setup();await f.duplicate();vi.mocked(f.browser.activation).mockResolvedValue(pending);const id=f.records()[0].id;await f.service.startActivation(id);expect(f.browser.sendActivation).toHaveBeenCalledWith(expect.anything(),'current@example.com');expect(f.records()[0].activation?.send).toBe('sent');expect(f.records()[0].phase).toBe('activation-pending');const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm);await restarted.startActivation(id);expect(f.browser.sendActivation).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).not.toHaveBeenCalled();});
  it('does not resend when Odoo already reports the logged-in user as recipient',async()=>{const f=setup();await f.duplicate();vi.mocked(f.browser.activation).mockResolvedValue({...pending,recipientEmail:'CURRENT@example.com'});await f.service.startActivation(f.records()[0].id);expect(f.browser.sendActivation).not.toHaveBeenCalled();});

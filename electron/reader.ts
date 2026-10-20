@@ -5,6 +5,8 @@ import { connectForm, oeaTarget, parseManagePage, validateTarget } from './manag
 import type { Database } from '../src/shared/types';
 import { assertCopyName, assertUnprotected, parseLiveInspection, type LiveInspection } from './live-contract';
 import { parseActivation, sameEmail, activationURL } from './activation';
+import { actionDestination } from './action-diagnostics';
+import { ActivationFlow, MemoryActivationJournal, type ActivationJournal } from './activation-flow';
 export const ACCOUNT_ORIGIN='https://www.odoo.com';
 export const LIST_PATH='/odoo-enterprise/databases';
 export const SESSION_PATH='/web/session/get_session_info';
@@ -17,7 +19,7 @@ export class MetadataReader {
  private violation:AppError|null=null;
  private pages=new Set<Page>();
  private origins=new Set([ACCOUNT_ORIGIN]);
- constructor(private context:BrowserContext,private createPage:()=>Promise<Page>=()=>context.newPage()){}
+ constructor(private context:BrowserContext,private createPage:()=>Promise<Page>=()=>context.newPage(),private diagnostic:(event:AppError)=>void=()=>{},private activationJournal:ActivationJournal=new MemoryActivationJournal()){}
  async install(beforeClose?:()=>Promise<void>){
   const existingPages=this.context.pages();
   await this.context.routeWebSocket('**/*',socket=>socket.close());
@@ -154,12 +156,20 @@ export class MetadataReader {
   const info=await this.activation(target);
   if(!info.pending)return;
   const u=activationURL(link,target.database.name,info.userEmail);
-  // Email HTML is never rendered, and response redirects are never followed.
-  await this.request(u.href,{redirect:'manual'});
+  await this.activationFlow().run({origin:target.database.url!,name:target.database.name,uuid:target.uuid,email:info.userEmail},u.href);
+ }
+ private activationFlow(){return new ActivationFlow(this.activationJournal,url=>this.request(url,{redirect:'manual'}),this.diagnostic);}
+ async resumeActivation(target:LiveInspection,expectedEmail:string){
+  assertUnprotected(target.database.name);assertUnprotected(target.database.id);
+  validateTarget(target.database.url!,target.uuid,target.database.name);
+  const info=await this.activation(target);
+  if(!sameEmail(info.userEmail,expectedEmail))throw new AppError('ACTIVATION_CHANGED','The signed-in user changed. No activation handoff was opened.');
+  await this.activationFlow().run({origin:target.database.url!,name:target.database.name,uuid:target.uuid,email:info.userEmail});
  }
  // These are the only mutation adapters. They are reachable only from the manual
  // live service after a single-use review, native confirmation and durable intent.
- // No redirect, remote script, retry or arbitrary method is accepted.
+ // Only activation's identity-bound handoffs can redirect. No remote script,
+ // automatic mutation retry or arbitrary method is accepted.
  private async liveRPC(origin:string,path:string,params:Record<string,unknown>):Promise<Record<string,any>>{
   const response=await this.request(origin+path,{body:JSON.stringify({jsonrpc:'2.0',method:'call',params,id:1}),contentType:'application/json'});
   if(response.status!==200||!response.contentType.includes('application/json'))throw new AppError('LIVE_OUTCOME_UNKNOWN','Odoo did not confirm the result. Do not retry; inspect the live action log and verify in Odoo.');
@@ -170,8 +180,15 @@ export class MetadataReader {
  async duplicateLive(target:LiveInspection,copyName:string){
   assertUnprotected(target.database.name);assertUnprotected(target.database.id);assertCopyName(copyName,target.database.name);
   validateTarget(target.database.url!,target.uuid,target.database.name);
-  const result=await this.liveRPC(target.database.url!,'/saas_worker/dup/json',{to:copyName,oauth_token:target.token,stay_on_portal:false,test:true,support:false});
+  const started=Date.now();
+  let result:Record<string,any>;
+  try{result=await this.liveRPC(target.database.url!,'/saas_worker/dup/json',{to:copyName,oauth_token:target.token,stay_on_portal:false,test:true,support:false});}
+  catch(error){
+   this.diagnostic(new AppError('DUPLICATION_RESPONSE',`Duplication response for ${copyName} was not confirmed after ${Math.round((Date.now()-started)/1000)} seconds. No request was retried.`));
+   throw error;
+  }
   if(typeof result.success!=='string'||!result.success)throw new AppError('LIVE_OUTCOME_UNKNOWN','Duplication was not confirmed. Use Verify copy; never resubmit an uncertain request.');
+  this.diagnostic(new AppError('DUPLICATION_RESPONSE',`Duplication response for ${copyName}: success destination ${actionDestination(result.success,target.database.url!)} was not followed.`));
   // Odoo returns a progress/application URL. Never navigate or execute it.
  }
  async checkCopyName(name:string,original:string){

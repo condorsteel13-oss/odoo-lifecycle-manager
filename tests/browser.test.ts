@@ -72,7 +72,7 @@ describe('manual Chrome handoff and session lifetime',()=>{
  });
 });
 it('manual login stays visible, then saves and restores into windowless Chrome without another login',async()=>{
- const vault={saveOdoo:vi.fn(async()=>{}),restoreOdoo:vi.fn(async()=>{})};
+ const vault={activationJournal:()=>undefined,saveOdoo:vi.fn(async()=>{}),restoreOdoo:vi.fn(async()=>{})};
  const connection=new ReadOnlyBrowser('/fixture','',()=>{},vault as any);
  await connection.setHeadless(true);const pending=connection.connect();
  await vi.waitFor(()=>expect(mocks.chrome.launch).toHaveBeenCalled());
@@ -95,7 +95,7 @@ it('a stalled saved-session check times out and closes only the owned browser',a
 });
 
 it('headless rejection preserves the successful login and points to visible mode',async()=>{
- const vault={saveOdoo:vi.fn(async()=>{}),restoreOdoo:vi.fn(async()=>{})};const connection=new ReadOnlyBrowser('/fixture','',()=>{},vault as any);await connection.setHeadless(true);
+ const vault={activationJournal:()=>undefined,saveOdoo:vi.fn(async()=>{}),restoreOdoo:vi.fn(async()=>{})};const connection=new ReadOnlyBrowser('/fixture','',()=>{},vault as any);await connection.setHeadless(true);
  const pending=connection.connect();await vi.waitFor(()=>expect(mocks.chrome.launch).toHaveBeenCalled());connection.finishLogin();await pending;
  mocks.reader.list.mockRejectedValueOnce(new AppError('SESSION_EXPIRED','Odoo could not complete the metadata read (HTTP 403).'));
  await expect(connection.applyMode()).rejects.toMatchObject({code:'HEADLESS_BLOCKED'});expect(vault.saveOdoo).toHaveBeenCalled();

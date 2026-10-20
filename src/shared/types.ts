@@ -68,6 +68,7 @@ export interface AppAPI {
   cancelLive(): Promise<void>;
   verifyCopy(recordId: string): Promise<void>;
   closeRemovedCopy(input: {recordId: string; removedByUser: true}): Promise<void>;
+  retainCopy(recordId: string): Promise<void>;
   activateCopy(recordId: string): Promise<void>;
   readActivationEmail(recordId: string): Promise<void>;
   state(): Promise<AppState>; connect(): Promise<void>; cancelConnection(): Promise<void>; finishLogin(): Promise<void>;

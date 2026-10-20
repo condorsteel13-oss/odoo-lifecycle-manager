@@ -68,7 +68,7 @@ export class ReadOnlyBrowser {
     const context=this.browser.contexts()[0];
     if(!context) throw new AppError('CHROME_CONNECTION','The dedicated Chrome session could not be read.');
     const background=this.runningHeadless?await BackgroundPages.create(this.browser,context):null;
-    this.reader=new MetadataReader(context,background?()=>background.newPage():undefined); await this.reader.install(background?()=>background.keepAlive():undefined);
+    this.reader=new MetadataReader(context,background?()=>background.newPage():undefined,this.diagnostic,this.vault?.activationJournal()); await this.reader.install(background?()=>background.keepAlive():undefined);
     if(restore)await this.vault?.restoreOdoo(context);
     if(background)return;
     const idle=await context.newPage();
@@ -107,6 +107,7 @@ export class ReadOnlyBrowser {
   activation(target:LiveInspection){return this.activeReader().activation(target);}
   sendActivation(target:LiveInspection,email:string){return this.activeReader().sendActivation(target,email);}
   activateFromEmail(target:LiveInspection,link:string){return this.activeReader().activateFromEmail(target,link);}
+  resumeActivation(target:LiveInspection,email:string){return this.activeReader().resumeActivation(target,email);}
   async liveList(){return parseDatabaseList(await this.activeReader().list());}
   async inspectLive(id:string):Promise<LiveInspection>{
     assertUnprotected(id);

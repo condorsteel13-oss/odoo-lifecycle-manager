@@ -89,11 +89,17 @@ These are observed frontend interfaces, not a guaranteed public mutation API. Li
 
 The official `saas_trial` client reads `/saas_worker/trial_info` with an empty JSON-RPC payload. The response exposes `status`, `user_email`, `activation_email`, `expiry_oe`, and `expiry`. Odoo’s Resend modal posts `/saas_worker/send_activation_email` with only `activation_email: user_email`. The app independently re-reads these fields before sending; a successful send is not proof of activation.
 
-The real activation email uses `https://www.odoo.com/odoo-enterprise/confirm-database/<copy-name>/<opaque-token>` with exactly `username`, `email` and `country_id` query fields. Both email fields must match the current Odoo user. The app follows one validated link without following its response redirect, then independently reads activation and Manage expiry. The real copy changed from `to_activate` to `activated`; tokens and email bodies were not saved.
+The real activation email uses `https://www.odoo.com/odoo-enterprise/confirm-database/<copy-name>/<opaque-token>` with exactly `username`, `email` and `country_id` query fields. Both email fields must match the current Odoo user. The initial implementation read this link but discarded its redirect. The copy changed from `to_activate` to `activated`, but this was not sufficient to complete the activation flow.
 
 The supplied webmail host runs SmarterMail. Its public client uses `/api/v1/mail/messages` with an Inbox owner, exact-copy query and bounded pagination; `/api/v1/mail/message` reads one selected UID. The adapter verifies browser-held account claims, keeps the access token inside the browser, and guards both exact native-fetch requests. It does not call seen/flag/delete/receipt APIs. Login remains manual in the app-owned normal Chrome profile.
 
-Live expiry reconciliation remains unresolved: activated trial expiry, session expiry and Manage countdown differ. The app displays the trial timestamp separately and does not substitute it silently for Manage’s countdown or unlock deletion.
+## Activation redirect correction, observed 20 October 2026
+
+A fresh, user-authorized testing copy returned an activation redirect to its own `/saas_worker/signin` with exactly `odoo_com_uid`, `name`, `email`, `action`, `activate_freemium`, `confirm_token`, `invite` and `db_uuid`. The observed action was `base.action_run_ir_action_todo`, with `activate_freemium=False` and `invite=True`. The implementation binds the UUID and email to the tracked copy and current user, validates all fields, and forwards the server-provided URL unchanged.
+
+The worker then redirects to `https://www.odoo.com/odoo-enterprise/invite-users` with exactly `db_uuid`, `login` and `user_signature`. This is retrieved as inert HTML to complete the redirect chain; no invitations or page scripts run. Completion-page wording is not treated as proof of activation. Fresh trial status and positive, reconciled Manage expiry are independently required before the copy is verified. A durable encrypted checkpoint preserves each unsubmitted handoff. An uncertain mutation is never replayed, while a pending completion page can be read again safely.
+
+After completing the worker handoff, the fresh copy’s Manage page reported **14 days**, compared with **2 days** in earlier tests that stopped after the account-site activation link. This is a result for this test, not a guarantee that Odoo always extends expiry. The app continues to display the trial-service timestamp separately and requires a fresh positive Manage expiry for verification.
 
 ## V1.4 persistent Viamail connection
 

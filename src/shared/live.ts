@@ -5,11 +5,12 @@ export function isProtected(name: string) {
   const databaseName = name.toLowerCase().replace(/^https:\/\//, '').replace(/\.odoo\.com$/, '');
   return /(^|-)accounting(-|$)/.test(databaseName);
 }
-export type LivePhase = 'duplicate-submitting' | 'duplicate-unknown' | 'awaiting-copy' | 'activation-pending' | 'awaiting-expiry' | 'copy-verified' | 'delete-submitting' | 'delete-unknown' | 'deleted' | 'copy-removed';
+export type LivePhase = 'duplicate-submitting' | 'duplicate-unknown' | 'awaiting-copy' | 'activation-pending' | 'awaiting-expiry' | 'copy-verified' | 'delete-submitting' | 'delete-unknown' | 'deleted' | 'copy-removed' | 'copy-retained';
 export interface ActivationRecord {
   userEmail: string; recipientEmail: string | null;
   send: 'not-needed' | 'sending' | 'sent' | 'unknown'; sentAt: string | null;
   link: 'not-started' | 'opening' | 'opened' | 'unknown';
+  completion?: 'pending' | 'complete';
 }
 export interface LiveRecord {
   id: string; createdAt: string; updatedAt: string;
@@ -21,6 +22,7 @@ export interface LiveRecord {
   activation?: ActivationRecord;
   activationVerifiedAt?: string | null;
   activationExpiresAt?: string | null;
+  retainedAt?: string;
   removal?: { userReportedRemoved: true; checkedAt: string; previousPhase: 'activation-pending' | 'awaiting-expiry' | 'copy-verified' };
   phase: LivePhase; copy: Database | null; copyUuid: string | null;
   verifiedAt: string | null; message: string;

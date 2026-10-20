@@ -25,12 +25,13 @@ let liveMode = false;
 let liveRedirect = false;
 let portalFailure = false;
 let activationRecipient='previous@example.com';
+let activationHandoff=false;
 let mailboxMode='ok';
 let mailBodies:any[]=[];
 const mailToken=(email='user@example.com',exp=Math.floor(Date.now()/1000)+3600)=>'fixture.'+Buffer.from(JSON.stringify({nameid:email,exp})).toString('base64url')+'.fixture';
 const mailRow=()=>({uid:5,folder:'inbox',from:{email:'online@odoo.com'},recipients:[{email:'user@example.com'}],subject:'Activate fixture-copy',internalDate:new Date().toISOString()});
 let liveBodies: {path:string;params:unknown}[] = [];
-const uuid='11111111-1111-1111-1111-111111111111';
+const uuid='11111111-1111-4111-8111-111111111111';
 const manageHTML='<html><body><div class="alert alert-danger">Your trial will expire in <strong>31</strong> day(s)</div><h3 id="database-section">Database</h3><p>Your database runs on fixture.odoo.com</p><button>Delete</button><script>fetch("/my/databases/delete",{method:"POST"})</script></body></html>';
 
 let authDestination = 'https://fixture.odoo.com/auth_oauth/oea?db=fixture&access_token=local-fixture-token';
@@ -54,7 +55,9 @@ test.beforeAll(async () => {
       if(req.url==='/interface/root'){res.writeHead(200,{'content-type':'text/html'});res.end(`<body><script>window.angular={element:()=>({injector:()=>({get:n=>n==='claimsService'?{getEmailAddress:()=>('${mailboxMode==='wrong-user'?'other@example.com':'user@example.com'}'),impersonating:()=>false}:{getToken:()=>('${mailToken()}'),getRefreshToken:()=>('fixture-refresh')}})})};</script></body>`);return;}
       if(['/api/v1/mail/messages','/api/v1/mail/message'].includes(req.url??'')){let body='';req.on('data',chunk=>{body+=chunk;});req.on('end',()=>{mailBodies.push({path:req.url,params:JSON.parse(body)});if(mailboxMode==='redirect'){res.writeHead(302,{location:'/api/v1/mail/delete-messages'});res.end();return;}res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(req.url==='/api/v1/mail/messages'?{results:mailboxMode==='no-match'?[{...mailRow(),subject:'Unrelated'}]:[mailRow()]}:{messageData:{...mailRow(),messageHTML:'<p>fixture-copy</p><a href="https://fixture-copy.odoo.com/saas_trial/confirm/1234567890123456">Activate</a><script>fetch("/api/v1/mail/delete-messages")</script><img src="https://tracker.example/x">'}}));});return;}
     }
-    if(req.url?.startsWith('/odoo-enterprise/confirm-database/fixture/')){res.writeHead(303,{location:'https://fixture.odoo.com/odoo'});res.end();return;}
+    if(req.url?.startsWith('/odoo-enterprise/confirm-database/fixture/')){res.writeHead(303,{location:activationHandoff?'https://fixture.odoo.com/saas_worker/signin?'+new URLSearchParams({odoo_com_uid:'123',name:'Fixture User',email:'current@example.com',action:'base.action_run_ir_action_todo',activate_freemium:'False',confirm_token:'t'.repeat(64),invite:'True',db_uuid:uuid}):'https://fixture.odoo.com/odoo'});res.end();return;}
+    if(req.url?.startsWith('/saas_worker/signin?')){res.writeHead(303,{location:'https://www.odoo.com/odoo-enterprise/invite-users?'+new URLSearchParams({db_uuid:uuid,login:'current@example.com',user_signature:'s'.repeat(64)})});res.end();return;}
+    if(req.url?.startsWith('/odoo-enterprise/invite-users?')){res.writeHead(200,{'content-type':'text/html'});res.end('<h1>Your database has been activated</h1><script>fetch("/my/databases/delete")</script>');return;}
     if(req.url==='/saas_worker/trial_info'){res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({jsonrpc:'2.0',id:1,result:{status:'to_activate',user_email:'current@example.com',activation_email:activationRecipient}}));return;}
     if(req.url==='/saas_worker/send_activation_email'){let body='';req.on('data',chunk=>{body+=chunk;});req.on('end',()=>{liveBodies.push({path:req.url!,params:JSON.parse(body).params});res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({jsonrpc:'2.0',id:1,result:{success:'Activation email sent'}}));});return;}
     if(liveMode && ['/odoo-enterprise/trial-check','/saas_worker/dup/json','/my/databases/delete','/saas_worker/drop/json'].includes(req.url??'')) {
@@ -99,7 +102,7 @@ test.beforeAll(async () => {
   backgroundBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
 });
 test.afterAll(async () => { if(backgroundLauncher&&backgroundLauncher.exitCode===null&&backgroundLauncher.signalCode===null){backgroundLauncher.kill('SIGTERM');await new Promise<void>(resolve=>{const t=setTimeout(()=>{backgroundLauncher.kill('SIGKILL');resolve();},5000);backgroundLauncher.once('exit',()=>{clearTimeout(t);resolve();});});} await backgroundBrowser?.close().catch(()=>{}); await browser?.close(); server?.closeAllConnections(); server?.close(); proxy?.closeAllConnections(); proxy?.close(); if (directory) rmSync(directory, { recursive: true, force: true }); });
-test.beforeEach(() => { mailboxMode='ok';mailBodies=[];activationRecipient='previous@example.com'; redirectRead = false; formLogin=false; manageLogin=false; liveMode=false;liveRedirect=false;portalFailure=false;liveBodies=[];received = []; authDestination = 'https://fixture.odoo.com/auth_oauth/oea?db=fixture&access_token=local-fixture-token'; });
+test.beforeEach(() => { activationHandoff=false;mailboxMode='ok';mailBodies=[];activationRecipient='previous@example.com'; redirectRead = false; formLogin=false; manageLogin=false; liveMode=false;liveRedirect=false;portalFailure=false;liveBodies=[];received = []; authDestination = 'https://fixture.odoo.com/auth_oauth/oea?db=fixture&access_token=local-fixture-token'; });
 
 test('native metadata reads use only fixed routes and no document reaches the server',async()=>{
  const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});
@@ -154,8 +157,8 @@ test('untrusted pages cannot invoke database operations through the reader conte
 test('official database sign-in follows only the validated OEA handoff and never loads the application',async()=>{
  const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});
  const reader=new MetadataReader(context);await reader.install();reader.allowDatabases(['https://fixture.odoo.com']);
- await reader.authenticate('https://fixture.odoo.com','11111111-1111-1111-1111-111111111111','fixture');
- expect(received).toEqual(['GET /my/databases/connect/11111111-1111-1111-1111-111111111111?manage_db=true','GET /auth_oauth/oea?db=fixture&access_token=local-fixture-token']);
+ await reader.authenticate('https://fixture.odoo.com','11111111-1111-4111-8111-111111111111','fixture');
+ expect(received).toEqual(['GET /my/databases/connect/11111111-1111-4111-8111-111111111111?manage_db=true','GET /auth_oauth/oea?db=fixture&access_token=local-fixture-token']);
  expect((await context.cookies('https://fixture.odoo.com')).some(c=>c.name==='db_session')).toBe(true);
  await context.close();
 });
@@ -164,8 +167,8 @@ test('sign-in rejects unexpected redirect hosts, mutations, signup and conflicti
   const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});
   const reader=new MetadataReader(context);await reader.install();reader.allowDatabases(['https://fixture.odoo.com']);
   received=[];authDestination=destination;
-  await expect(reader.authenticate('https://fixture.odoo.com','11111111-1111-1111-1111-111111111111','fixture')).rejects.toThrow(/unsupported/);
-  expect(received).toEqual(['GET /my/databases/connect/11111111-1111-1111-1111-111111111111?manage_db=true']);
+  await expect(reader.authenticate('https://fixture.odoo.com','11111111-1111-4111-8111-111111111111','fixture')).rejects.toThrow(/unsupported/);
+  expect(received).toEqual(['GET /my/databases/connect/11111111-1111-4111-8111-111111111111?manage_db=true']);
   await context.close();
  }
 });
@@ -203,9 +206,10 @@ test('name availability check sends no mutation and accepts only a valid name',a
  await expect(reader.checkCopyName('example-accounting-0805','fixture')).rejects.toThrow();expect(received).toHaveLength(1);await context.close();
 });
 test('live duplication has one exact testing-only request and never follows its success URL',async()=>{
- const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});const reader=new MetadataReader(context);await reader.install();reader.allowDatabases(['https://fixture.odoo.com']);liveMode=true;
+ const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});const diagnostics:unknown[]=[];const reader=new MetadataReader(context,undefined,event=>diagnostics.push({code:event.code,message:event.message}));await reader.install();reader.allowDatabases(['https://fixture.odoo.com']);liveMode=true;
  await reader.duplicateLive(liveTarget(),'fixture-copy');
  expect(received).toEqual(['POST /saas_worker/dup/json']);expect(liveBodies[0].params).toEqual({to:'fixture-copy',oauth_token:'fixture-private-token',stay_on_portal:false,test:true,support:false});
+ expect(diagnostics).toHaveLength(1);expect(JSON.stringify(diagnostics)).toContain('/progress');expect(JSON.stringify(diagnostics)).not.toContain('fixture-private-token');
  await context.close();
 });
 test('live deletion performs only the two reviewed steps with exact identity',async()=>{
@@ -261,12 +265,23 @@ for(const mode of ['wrong-user','no-match','redirect'])test(`mailbox ${mode} sto
  expect(mailBodies.length).toBe(mode==='wrong-user'?0:1);expect(received.join(' ')).not.toMatch(/delete-messages|saas_trial/);await context.close();
 });
 
-test('email activation follows only its exact validated Odoo link and ignores redirects',async()=>{
- const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});const reader=new MetadataReader(context);await reader.install();reader.allowDatabases(['https://fixture.odoo.com']);
+test('email activation refuses an unsupported redirect without replaying its initial link',async()=>{
+ const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});const diagnostics:unknown[]=[];const reader=new MetadataReader(context,undefined,event=>diagnostics.push({code:event.code,message:event.message}));await reader.install();reader.allowDatabases(['https://fixture.odoo.com']);
+ const link='https://www.odoo.com/odoo-enterprise/confirm-database/fixture/'+('x'.repeat(140))+'?username=current%40example.com&email=current%40example.com&country_id=38';
+ await expect(reader.activateFromEmail(liveTarget(),link)).rejects.toThrow(/unsupported/);
+ expect(received).toEqual(['POST /saas_worker/trial_info','GET '+new URL(link).pathname+new URL(link).search]);
+ expect(diagnostics).toHaveLength(1);expect(JSON.stringify(diagnostics)).toContain('unsupported path');expect(JSON.stringify(diagnostics)).not.toMatch(/current@example|x{140}/);
+ await expect(reader.activateFromEmail(liveTarget(),link+'&redirect=https://evil.example')).rejects.toThrow(/activation link/);expect(received).toHaveLength(3);await context.close();
+});
+test('activation follows the bound worker handoff and inert completion page exactly once',async()=>{
+ const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'}),diagnostics:unknown[]=[];
+ const reader=new MetadataReader(context,undefined,event=>diagnostics.push({code:event.code,message:event.message}));await reader.install();reader.allowDatabases(['https://fixture.odoo.com']);activationHandoff=true;
  const link='https://www.odoo.com/odoo-enterprise/confirm-database/fixture/'+('x'.repeat(140))+'?username=current%40example.com&email=current%40example.com&country_id=38';
  await reader.activateFromEmail(liveTarget(),link);
- expect(received).toEqual(['POST /saas_worker/trial_info','GET '+new URL(link).pathname+new URL(link).search]);
- await expect(reader.activateFromEmail(liveTarget(),link+'&redirect=https://evil.example')).rejects.toThrow(/activation link/);expect(received).toHaveLength(3);await context.close();
+ expect(received.map(r=>r.split('?')[0])).toEqual(['POST /saas_worker/trial_info','GET '+new URL(link).pathname,'GET /saas_worker/signin','GET /odoo-enterprise/invite-users']);
+ expect(JSON.stringify(diagnostics)).toContain('ACTIVATION_COMPLETE');expect(JSON.stringify(diagnostics)).not.toMatch(/t{64}|s{64}|current@example/);
+ await reader.resumeActivation(liveTarget(),'current@example.com');
+ expect(received.filter(r=>r.startsWith('GET '))).toHaveLength(3);expect(liveBodies).toEqual([]);await context.close();
 });
 
 test('headless Viamail check loads no mailbox page or messages and scoped activation remains read-only',async()=>{

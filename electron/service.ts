@@ -216,7 +216,7 @@ export class AppService {
         const due=scheduledCandidates(discovery.databases,this.state.settings,this.state.lifecycleQueue,this.state.liveHistory);
         const reserved=[...discovery.databases.map(db=>db.name),...this.state.liveHistory.map(record=>record.copyName),...this.state.lifecycleQueue.map(job=>job.copyName)];
         const jobs:ScheduledCycle[]=due.map(database=>{
-          const existing=this.state.liveHistory.find(record=>record.originalUuid===database.uuid&&record.phase!=='copy-removed');
+          const existing=this.state.liveHistory.find(record=>record.originalUuid===database.uuid&&!['copy-removed','copy-retained'].includes(record.phase));
           const copyName=existing?.copyName??proposeName(database.name,reserved,new Date());reserved.push(copyName);
           return {id:crypto.randomUUID(),database,copyName,detectedAt:new Date().toISOString(),status:'pending',recordId:existing?.id??null,message:'Expiry threshold reached. Waiting to run this lifecycle.'};
         });
@@ -315,6 +315,13 @@ export class AppService {
   async cancelLive(){if(!this.workflowController)this.live.cancel();}
   async verifyCopy(id:string){return this.exclusive(async()=>{try{await this.live.verifyCopy(id);}finally{await this.mergeLiveMetadata(id);}});}
   async closeRemovedCopy(input:{recordId:string;removedByUser:true}){return this.exclusive(async()=>{await this.live.closeRemovedCopy(input);await this.mergeLiveMetadata(input.recordId);});}
+  async retainCopy(id:string){return this.exclusive(async()=>{
+    await this.live.retainCopy(id);
+    const record=this.live.getRecord(id);
+    const job=this.state.lifecycleQueue.find(job=>job.id===record.scheduledId||job.recordId===id);
+    if(job)await this.updateJob(job.id,{status:'dismissed',message:'Cycle closed with both databases retained. No deletion requested.'});
+    await this.mergeLiveMetadata(id);
+  });}
   async activateCopy(id:string){return this.exclusive(async()=>{const record=await this.live.startActivation(id);await this.mergeLiveMetadata(id);if(record)await this.checkMail();});}
   async readActivationEmail(id:string){return this.exclusive(async()=>{try{await this.live.completeActivation(id,r=>this.mailbox.findActivationLink({copyName:r.copyName,email:r.activation!.userEmail,createdAt:r.createdAt}));}finally{await this.mergeLiveMetadata(id);}});}
   private async mergeLiveMetadata(id:string){

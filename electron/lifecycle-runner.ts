@@ -36,7 +36,7 @@ export class LifecycleRunner {
         const record=this.live.getRecord(id);
         const code=error instanceof AppError?error.code:'';
         // Never continue or replay a deletion with an uncertain outcome.
-        if(['delete-submitting','delete-unknown','deleted','copy-removed'].includes(record.phase))throw error;
+        if(['delete-submitting','delete-unknown','deleted','copy-removed','copy-retained'].includes(record.phase))throw error;
         if(code==='LIVE_BLOCKED'&&record.phase==='activation-pending'){
           this.options.progress('Activating the copy using the signed-in user’s connected mailbox',id);
           try{

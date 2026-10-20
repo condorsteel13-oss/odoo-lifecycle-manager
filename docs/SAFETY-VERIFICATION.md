@@ -13,6 +13,12 @@ The automated suite uses synthetic accounts, temporary app-data directories, and
 - Inherited expiry does not immediately trigger repeated copy/delete cycles. No extension or indefinite renewal is promised.
 - Session vaults are encrypted using macOS secure storage. Reports, release assets and Git history exclude cookies, tokens, private account metadata and local screenshots.
 - Guard tests reject arbitrary methods, redirects, RPC, untrusted pages, and WebSockets. Activation messages are scoped to the exact copy and current Odoo user.
+- Activation redirect tests bind each step to the copy UUID, origin and current email, reject additional operations, keep completion HTML inert, and prevent mutation replay after uncertain responses. Pending handoffs are encrypted separately from ordinary state; incomplete completion blocks deletion even when Odoo reports an activated status.
+- Copy-only cycles can be closed with both databases retained. These terminal records cannot resume lifecycle actions or authorize deletion.
+
+## Activation redirect verification, 20 October 2026
+
+The local correction passed 218 unit tests, the 33 reader and live-action UI browser fixtures, and a production build. After the final completion-check adjustment, the affected activation and mailbox browser fixtures were rerun. One authorized fresh live testing copy completed the database activation redirect and reported 14 days on Manage. No deletion was requested and accounting was excluded. The completion page is parsed inertly; the app independently requires activated trial status and positive, reconciled Manage expiry before verification.
 
 ## Public release packaging
 

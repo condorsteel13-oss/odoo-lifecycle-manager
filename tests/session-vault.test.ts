@@ -5,10 +5,21 @@ import {join} from 'node:path';
 import {createCipheriv,createDecipheriv,randomBytes} from 'node:crypto';
 import {SessionVault,type SessionCipher} from '../electron/session-vault';
 import {LocalStore} from '../electron/store';
+import {EncryptedActivationJournal} from '../electron/activation-flow';
 const key=randomBytes(32);
 const cipher:SessionCipher={available:()=>true,encrypt(value){const iv=randomBytes(12),c=createCipheriv('aes-256-gcm',key,iv);const bytes=Buffer.concat([c.update(value),c.final()]);return Buffer.concat([iv,c.getAuthTag(),bytes]);},decrypt(value){const c=createDecipheriv('aes-256-gcm',key,value.subarray(0,12));c.setAuthTag(value.subarray(12,28));return Buffer.concat([c.update(value.subarray(28)),c.final()]).toString();}};
 const cookie={name:'session_id',value:'secret-session-token',domain:'.odoo.com',path:'/',expires:-1,httpOnly:true,secure:true,sameSite:'Lax'};
 describe('private persistent sessions',()=>{
+ it('encrypts activation handoffs and restores their pending stage without exposing tokens',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'lifecycle-activation-')),uuid='11111111-1111-4111-8111-111111111111';
+  try{
+   const value={version:1 as const,uuid,origin:'https://fixture.odoo.com',name:'fixture',email:'user@example.com',stage:'worker-pending' as const,url:'https://fixture.odoo.com/saas_worker/fixture_activation?token=secret-activation-token',updatedAt:new Date().toISOString()};
+   await new EncryptedActivationJournal(dir,cipher).write(value);
+   const bytes=await readFile(join(dir,uuid+'.enc'));expect(bytes.toString()).not.toMatch(/secret-activation|fixture|user@example/);
+   expect((await stat(join(dir,uuid+'.enc'))).mode&0o777).toBe(0o600);
+   expect(await new EncryptedActivationJournal(dir,cipher).read(uuid)).toEqual(value);
+  }finally{await rm(dir,{recursive:true,force:true});}
+ });
  it('encrypts session-only Odoo cookies, scopes them and restores them after restart',async()=>{
   const dir=await mkdtemp(join(tmpdir(),'lifecycle-session-'));
   try{

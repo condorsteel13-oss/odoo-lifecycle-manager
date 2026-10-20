@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { BrowserContext } from 'playwright';
 import { AppError } from './errors';
+import { EncryptedActivationJournal } from './activation-flow';
 
 // The cipher is Electron safeStorage in production (macOS Keychain). No secret
 // is sent to the renderer, diagnostics, reports, or ordinary state.json.
@@ -18,6 +19,7 @@ function odooDomain(domain:string) { return /^(?:\.?odoo\.com|\.?[a-z0-9][a-z0-9
 export class SessionVault {
   readonly path:string;
   constructor(private profile:string, private kind:'odoo'|'mail', private cipher:SessionCipher) { this.path=join(profile,'lifecycle-session.enc'); }
+  activationJournal(){return new EncryptedActivationJournal(join(this.profile,'activation-handoffs'),this.cipher);}
   private requireCipher(){if(!this.cipher.available())throw new AppError('SESSION_STORAGE_UNAVAILABLE','macOS secure storage is unavailable. Unlock your login keychain to save or reuse connections.');}
   private async read(){
     try{

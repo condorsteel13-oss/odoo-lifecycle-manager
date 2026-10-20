@@ -16,6 +16,7 @@ export interface LiveConnection {
   activation(target: LiveInspection): Promise<ActivationInfo>;
   sendActivation(target: LiveInspection, expectedEmail: string): Promise<void>;
   activateFromEmail(target: LiveInspection, link: string): Promise<void>;
+  resumeActivation(target: LiveInspection, email: string): Promise<void>;
 }
 export type NativeConfirmation = (review: LiveReview) => Promise<boolean>;
 const confirmation = z.object({ ticket: z.string().uuid(), typedName: z.string().max(101), acknowledged: z.literal(true), backupConfirmed: z.boolean().optional(), backupReference: z.string().trim().max(1000).optional(), integrityConfirmed: z.boolean().optional(), integrityNotes: z.string().trim().max(2000).optional(), subscriptionReviewed: z.boolean().optional() }).strict();
@@ -52,10 +53,20 @@ export class LiveService {
     for (const record of this.records()) {
       if (record.copyName.toLowerCase() === name.toLowerCase()) fail('An action already exists for that copy name. Use a fresh name; historical names cannot be reused.');
       if (record.originalUuid !== uuid) continue;
+      if (record.phase === 'copy-retained' && record.retainedAt && record.copyUuid) continue;
       if (record.phase !== 'copy-removed' || !record.removal?.userReportedRemoved || !record.copyUuid) fail('An action already exists for this source. Use its verification controls, or close the cycle if you manually removed its known copy.');
       // Recheck on preparation and submission, including after an app restart.
       await this.missingCopy(record);
     }
+  }
+  async retainCopy(id: string) {
+    this.cancel(); this.assertReady();
+    const record=this.record(z.string().uuid().parse(id));
+    if(record.phase!=='copy-verified'||!record.copyUuid||!record.verifiedAt)fail('Verify the copy before closing its cycle and keeping both databases.');
+    const original=await this.target(record.original.id,record.originalUuid);
+    const copy=await this.checkedCopy(record),now=new Date().toISOString();
+    await this.put({...record,original:original.database,copy:copy.database,phase:'copy-retained',retainedAt:now,updatedAt:now,
+      message:'Cycle closed with both databases retained. No deletion was requested. This record cannot resume lifecycle actions; a new copy requires a fresh name and its own creation review.'});
   }
   async closeRemovedCopy(input: { recordId: string; removedByUser: true }) {
     this.cancel(); this.assertReady();
@@ -112,6 +123,7 @@ export class LiveService {
     if(trialDays!==null&&(trialDays<=0||Math.abs(trialDays-days)>1))fail('Odoo expiry sources disagree. Deletion remains blocked until they can be reconciled.');
   }
   private async checkedCopy(record: LiveRecord): Promise<LiveInspection> {
+    if(record.activation?.completion==='pending')fail('Finish the saved activation handoff before verifying the copy or deleting its original.');
     const copy = await this.copyIdentity(record);
     const info=await this.browser.activation(copy);
     if (!info.activated) fail('The copy is pending email activation. Activate it before verifying expiry or preparing deletion.');
@@ -125,8 +137,10 @@ export class LiveService {
     try {
       const copy=await this.copyIdentity(r), info=await this.browser.activation(copy), now=new Date().toISOString();
       const days=daysRemaining(copy.database.expiresAt,new Date())??copy.database.remainingDays;
-      observed={...r,copy:copy.database,copyUuid:copy.uuid,phase:info.activated?'awaiting-expiry':'activation-pending',activationVerifiedAt:info.activated?now:null,activationExpiresAt:info.expiresAt??null,verifiedAt:null,updatedAt:now,message:info.activated?`Odoo confirms activation. Manage reports ${days==null?'unknown expiry':days+' days remaining'}. Positive expiry must be verified before deletion is available.`:'The copy is pending email activation. The original is retained and deletion is blocked.'};
+      const incomplete=r.activation?.completion==='pending';
+      observed={...r,copy:copy.database,copyUuid:copy.uuid,phase:info.activated&&!incomplete?'awaiting-expiry':'activation-pending',activationVerifiedAt:info.activated&&!incomplete?now:null,activationExpiresAt:info.expiresAt??null,verifiedAt:null,updatedAt:now,message:incomplete?'The activation handoff is incomplete. Use Complete activation; deletion remains blocked.':info.activated?`Odoo confirms activation. Manage reports ${days==null?'unknown expiry':days+' days remaining'}. Positive expiry must be verified before deletion is available.`:'The copy is pending email activation. The original is retained and deletion is blocked.'};
       await this.put(observed);
+      if(incomplete)fail('Finish the saved activation handoff before verifying the copy or deleting its original.');
       if(!info.activated)fail('The copy is pending email activation. Activate it before verifying expiry or preparing deletion.');
       this.assertCopyExpiry(copy,info);
       await this.put({...observed,phase:'copy-verified',verifiedAt:now,message:'Distinct copy, Odoo database family, authenticated access, testing neutralization, completed activation and actual expiry verified. Review your business data and backup before deleting the original.'});
@@ -141,6 +155,7 @@ export class LiveService {
     if (!['duplicate-submitting','duplicate-unknown','awaiting-copy','activation-pending','awaiting-expiry','copy-verified'].includes(r.phase)) fail('Activation is unavailable after deletion has started.');
     const copy = await this.copyIdentity(r);
     const info = await this.browser.activation(copy);
+    if(r.activation?.completion==='pending')return structuredClone(r);
     if (info.activated) { await this.verifyCopy(id); return null; }
     if (!info.pending) fail('Odoo returned an unsupported activation status. Inspect this copy in Odoo.');
     if (r.activation && !sameEmail(r.activation.userEmail, info.userEmail)) fail('The signed-in Odoo user changed. Sign back into the user who started activation.');
@@ -160,16 +175,23 @@ export class LiveService {
     this.cancel();this.assertReady();const r=this.record(id);
     if(r.phase!=='activation-pending'||!r.activation)fail('Start activation for this tracked copy first.');
     const copy=await this.copyIdentity(r), info=await this.browser.activation(copy);
+    if(r.activation.completion==='pending'){
+      if(!sameEmail(info.userEmail,r.activation.userEmail))fail('The signed-in user changed. No activation handoff was opened.');
+      try{this.execution.beforeMutation?.();await this.browser.resumeActivation(copy,info.userEmail);}
+      catch(error){await this.put({...r,message:'The activation handoff is incomplete. No activation request was replayed; deletion remains blocked.'});throw error;}
+      await this.put({...r,activation:{...r.activation,link:'opened',completion:'complete'},message:'Odoo’s activation completion page was confirmed. Reading expiry.'});
+      await this.verifyCopy(id);return;
+    }
     if(info.activated){await this.verifyCopy(id);return;}
     if(!info.pending||!sameEmail(info.userEmail,r.activation.userEmail))fail('Activation status or the signed-in user changed. No mailbox was read.');
     if(r.activation.link!=='not-started')fail('An activation link was already attempted. Use Verify copy; the link will not be replayed automatically.');
     const link=await readLink(structuredClone(r));
     activationURL(link,r.copyName,info.userEmail); // Reject unsupported formats before recording intent.
-    const intent={...r,activation:{...r.activation,link:'opening' as const},updatedAt:new Date().toISOString()};
+    const intent={...r,activation:{...r.activation,link:'opening' as const,completion:'pending' as const},updatedAt:new Date().toISOString()};
     await this.put(intent);
     try{this.execution.beforeMutation?.();await this.browser.activateFromEmail(copy,link);}
-    catch{await this.put({...intent,activation:{...intent.activation,link:'unknown'},message:'Activation outcome is uncertain. Use Verify copy; no link will be replayed automatically.'});throw new AppError('ACTIVATION_UNKNOWN','Activation was not confirmed. Use Verify copy.');}
-    await this.put({...intent,activation:{...intent.activation,link:'opened'},message:'Activation link submitted. Reading the copy’s activation status and Manage expiry.'});
+    catch(error){await this.put({...intent,activation:{...intent.activation,link:'unknown'},message:'The activation handoff is incomplete. Use Complete activation to continue a saved, unsubmitted step. No completed request is replayed; deletion remains blocked.'});throw error instanceof AppError?error:new AppError('ACTIVATION_UNKNOWN','Activation was not confirmed. No request will be replayed.');}
+    await this.put({...intent,activation:{...intent.activation,link:'opened',completion:'complete'},message:'Odoo’s activation completion page was confirmed. Reading the copy’s activation status and Manage expiry.'});
     await this.verifyCopy(id);
   }
   async prepareDelete(id: string) {

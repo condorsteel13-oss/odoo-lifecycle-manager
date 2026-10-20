@@ -52,6 +52,7 @@ else {
       'app:live-cancel': () => service.cancelLive(),
       'app:live-verify': id => service.verifyCopy(id),
       'app:live-close-removed-copy': input => service.closeRemovedCopy(input),
+      'app:live-retain-copy': id => service.retainCopy(id),
       'app:live-activate': id => service.activateCopy(id),
       'app:live-read-email': id => service.readActivationEmail(id),
       'app:export': async (ids?: unknown) => {
