@@ -1,4 +1,4 @@
-# Odoo Lifecycle Manager — macOS, V1.8.4
+# Odoo Lifecycle Manager — macOS, V1.8.5
 
 Open **Settings → How to use Lifecycle Manager** for a quick start and explanations of all six workspace sections, Safe mode, parent deletion, and activation.
 
@@ -80,6 +80,12 @@ The build compiles the Chrome and update installer helpers for both CPU architec
 5. Use **History** to inspect reports or export JSON through the native save dialog. Use **Settings** for diagnostics and local session controls.
 
 The app never opens individual database applications. Manual login runs in normal Chrome under your control. After handoff, a new or changed authentication route, additional interactive authentication, unexpected redirect, or challenge stops the affected read; it is not bypassed.
+
+### Automatic Chrome recovery
+
+Before opening either account connection, the app checks its dedicated Chrome profile for an abandoned browser from a previous crash or interrupted startup. It records the owning app process and its start time, then checks the Chrome executable, exact profile and local debugging port before closing an orphan. This also handles a launcher that exited before Chrome finished starting. Reconnecting then uses the existing saved session; recovery does not clear cookies or require a new login while that session remains valid.
+
+Recovery applies only to Lifecycle Manager's two profiles. A live owning app, another active background launcher, an unrelated Chrome profile or uncertain ownership blocks cleanup and shows a connection error. Personal Chrome is left alone. The app requests a normal termination, waits for Chrome to exit and never force-kills it or deletes Chrome's singleton locks. Ownership metadata is stored alongside each app profile; no credentials are included. Recovery itself makes no Odoo database changes.
 
 ## Duplication and activation preferences
 

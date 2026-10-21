@@ -5,7 +5,7 @@ await build({ entryPoints: ['electron/main.ts', 'electron/preload.ts'], outdir: 
 if (process.platform === 'darwin') {
   const cache = 'dist-electron/swift-module-cache';
   mkdirSync(cache, { recursive: true });
-  for (const helper of ['chrome-background', 'update-installer']) {
+  for (const helper of ['chrome-background', 'chrome-recovery', 'update-installer']) {
     const binaries = ['arm64', 'x86_64'].map(arch => {
       const output = `dist-electron/${helper}-${arch}`;
       execFileSync('xcrun', ['swiftc', `native/${helper}.swift`, '-target', `${arch}-apple-macos13.0`, '-module-cache-path', cache, '-o', output, '-O'], { stdio: 'inherit' });

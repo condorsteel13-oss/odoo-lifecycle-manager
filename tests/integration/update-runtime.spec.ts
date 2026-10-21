@@ -18,6 +18,7 @@ with zipfile.ZipFile(sys.argv[1],'w') as z:
   ('Info.plist',plistlib.dumps({'CFBundleIdentifier':'local.odoo.lifecycle-manager','CFBundleExecutable':'Odoo Lifecycle Manager','CFBundleShortVersionString':'1.9.0','LSMinimumSystemVersion':'13.0'}),0o100644),
   ('MacOS/Odoo Lifecycle Manager',b'fixture executable',0o100755),
   ('Resources/update-installer',b'fixture helper',0o100755),
+  ('Resources/chrome-recovery',b'fixture Chrome recovery helper',0o100755),
   ('Resources/app.asar',b'physical ASAR payload',0o100644),
   ('Resources/app.asar.unpacked/native.node',b'physical unpacked payload',0o100644)]:
   i=zipfile.ZipInfo(base+name);i.create_system=3;i.external_attr=mode<<16;z.writestr(i,data)`, archive]);

@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { AppError } from './errors';
+import { ChromeProfileOwnership } from './chrome-recovery';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 type ChromeDisplay = boolean | 'background';
 export async function waitForChromeEndpoint(endpoint:string,port:string,attempts=100,intervalMs=100):Promise<boolean>{
@@ -26,6 +27,7 @@ export class ManualChrome {
   private endpoint: string | null = null;
   private endpointAvailable = false;
   private display: ChromeDisplay = false;
+  private ownership: ChromeProfileOwnership | null = null;
   constructor(readonly profile: string) {}
   get isRunning() { return (!!this.process && this.process.exitCode === null && this.process.signalCode === null) || this.endpointAvailable; }
   // On macOS Chrome may hand a launch off to its browser process and exit the
@@ -43,6 +45,7 @@ export class ManualChrome {
     } catch { this.endpointAvailable = false; return false; }
   }
   async launch(url: string, display: ChromeDisplay = false): Promise<string> {
+    if (this.ownership && !this.isRunning) await this.close();
     if (this.isRunning && this.endpoint) {
       if(this.display!==display)throw new AppError('CHROME_MODE','Close the current browser before changing its display mode.');
       return this.endpoint;
@@ -50,48 +53,58 @@ export class ManualChrome {
     if (!existsSync(CHROME)) throw new AppError('CHROME_MISSING', 'Install Google Chrome in Applications to use manual sign-in.');
     await mkdir(join(this.profile, 'Default'), { recursive: true, mode: 0o700 });
     await chmod(this.profile, 0o700);
-    const path = join(this.profile, 'Default', 'Preferences');
-    let prefs: Record<string, any> = {};
-    try { prefs = JSON.parse(await readFile(path, 'utf8')); } catch {}
-    prefs.credentials_enable_service = false;
-    prefs.profile = { ...prefs.profile, password_manager_enabled: false };
-    await writeFile(path, JSON.stringify(prefs), { mode: 0o600 });
     // A nonzero, OS-assigned loopback port; Chrome's debugging service is never public.
     const port = await new Promise<number>((resolve, reject) => {
       const server = createServer(); server.on('error', reject);
       server.listen(0, '127.0.0.1', () => { const port = (server.address() as { port: number }).port; server.close(error => error ? reject(error) : resolve(port)); });
     });
-    // Launch Services hides only this new Chrome instance before presenting its
-    // blank bootstrap window. The reader replaces it with windowless targets.
-    if(display==='background'&&url!=='about:blank')throw new AppError('CHROME_MODE','Background Chrome starts with an empty reader only.');
-    const displayArgs=display==='background'?['--no-startup-window']:display?['--headless=new',url]:['--new-window',url];
-    const resources=(process as NodeJS.Process&{resourcesPath?:string}).resourcesPath;
-    const bundled=resources?join(resources,'chrome-background'):'';
-    const helper=existsSync(bundled)?bundled:join(process.cwd(),'dist-electron/chrome-background');
-    if(display==='background'&&!existsSync(helper))throw new AppError('BACKGROUND_UNAVAILABLE','The background Chrome launcher is missing. Reinstall the app or select visible mode.');
-    const child = spawn(display==='background'?helper:CHROME, [`--user-data-dir=${this.profile}`, `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', '--no-first-run', '--no-default-browser-check', '--disable-save-password-bubble', ...displayArgs], { stdio: display==='background'?['ignore','pipe','ignore']:'ignore' });
-    this.display = display;
-    child.on('error', () => {});
-    this.process = child;
-    if(display==='background'){
-      try{await new Promise<void>((resolve,reject)=>{
-        const finish=(error?:Error)=>{clearTimeout(timer);child.stdout?.off('data',ready);child.off('exit',stopped);child.off('error',failed);error?reject(error):resolve();};
-        const ready=(data:Buffer)=>{if(data.toString().includes('ready'))finish();};
-        const stopped=()=>finish(new AppError('BACKGROUND_UNAVAILABLE',`Chrome could not start hidden (launcher ${child.exitCode??'timeout'}). Your saved session is retained.`));
-        const failed=()=>stopped();const timer=setTimeout(stopped,10000);
-        child.stdout?.on('data',ready);child.once('exit',stopped);child.once('error',failed);
-      });}catch(error){await this.close();throw error;}
-    }
-    const endpoint = `http://127.0.0.1:${port}`;
-    this.endpoint = endpoint;
-    this.endpointAvailable = false;
-    // The Chrome executable may exit while macOS starts the browser process.
-    // Keep polling for the full startup window before treating launch as failed.
-    if(await waitForChromeEndpoint(endpoint,String(port))){this.endpointAvailable=true;return endpoint;}
-    await this.close();
-    throw new AppError('CHROME_LAUNCH', 'The dedicated Chrome window did not finish starting. Close its previous window and try again.');
+    const ownership = new ChromeProfileOwnership(this.profile, port);
+    await ownership.acquire();
+    this.ownership = ownership;
+    try {
+      // Acquire ownership before changing preferences or launching Chrome. A live
+      // owner is never displaced, even when its Chrome was parented to launchd.
+      const path = join(this.profile, 'Default', 'Preferences');
+      let prefs: Record<string, any> = {};
+      try { prefs = JSON.parse(await readFile(path, 'utf8')); } catch {}
+      prefs.credentials_enable_service = false;
+      prefs.profile = { ...prefs.profile, password_manager_enabled: false };
+      await writeFile(path, JSON.stringify(prefs), { mode: 0o600 });
+      // Launch Services hides only this new Chrome instance before presenting its
+      // blank bootstrap window. The reader replaces it with windowless targets.
+      if(display==='background'&&url!=='about:blank')throw new AppError('CHROME_MODE','Background Chrome starts with an empty reader only.');
+      const displayArgs=display==='background'?['--no-startup-window']:display?['--headless=new',url]:['--new-window',url];
+      const resources=(process as NodeJS.Process&{resourcesPath?:string}).resourcesPath;
+      const bundled=resources?join(resources,'chrome-background'):'';
+      const helper=existsSync(bundled)?bundled:join(process.cwd(),'dist-electron/chrome-background');
+      if(display==='background'&&!existsSync(helper))throw new AppError('BACKGROUND_UNAVAILABLE','The background Chrome launcher is missing. Reinstall the app or select visible mode.');
+      const child = spawn(display==='background'?helper:CHROME, [`--user-data-dir=${this.profile}`, `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', '--no-first-run', '--no-default-browser-check', '--disable-save-password-bubble', ...displayArgs], { stdio: display==='background'?['ignore','pipe','ignore']:'ignore' });
+      this.display = display;
+      child.on('error', () => {});
+      this.process = child;
+      if(display==='background'){
+        await new Promise<void>((resolve,reject)=>{
+          const finish=(error?:Error)=>{clearTimeout(timer);child.stdout?.off('data',ready);child.off('exit',stopped);child.off('error',failed);error?reject(error):resolve();};
+          const ready=(data:Buffer)=>{if(data.toString().includes('ready'))finish();};
+          const stopped=()=>finish(new AppError('BACKGROUND_UNAVAILABLE',`Chrome could not start hidden (launcher ${child.exitCode??'timeout'}). Your saved session is retained.`));
+          const failed=()=>stopped();const timer=setTimeout(stopped,10000);
+          child.stdout?.on('data',ready);child.once('exit',stopped);child.once('error',failed);
+        });
+      }
+      const endpoint = `http://127.0.0.1:${port}`;
+      this.endpoint = endpoint;
+      this.endpointAvailable = false;
+      // The Chrome executable may exit while macOS starts the browser process.
+      // Keep polling for the full startup window before treating launch as failed.
+      if(await waitForChromeEndpoint(endpoint,String(port))){this.endpointAvailable=true;return endpoint;}
+      throw new AppError('CHROME_LAUNCH', 'The dedicated Chrome window did not finish starting. Close its previous window and try again.');
+    } catch (error) { await this.close().catch(() => {}); throw error; }
   }
   async close() {
+    // This also covers launchers which exited before DevTools became ready.
+    // The native helper verifies the ownership token, process birth time,
+    // Chrome executable, exact profile and port before requesting SIGTERM.
+    if (this.ownership) { await this.ownership.release(); this.ownership = null; }
     const child = this.process;
     if (!child) return;
     if (child.exitCode !== null || child.signalCode !== null) {

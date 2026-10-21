@@ -61,7 +61,7 @@ export async function validateBundle(bundle: string, version: string) {
   const { stdout } = await exec('/usr/bin/plutil', ['-convert', 'json', '-o', '-', join(bundle, 'Contents/Info.plist')]);
   const info = JSON.parse(stdout);
   if (info.CFBundleIdentifier !== BUNDLE_ID || info.CFBundleShortVersionString !== version || info.CFBundleExecutable !== 'Odoo Lifecycle Manager') throw updateError('The downloaded app identity or version does not match this release.');
-  for (const path of ['Contents/MacOS/Odoo Lifecycle Manager', 'Contents/Resources/update-installer']) {
+  for (const path of ['Contents/MacOS/Odoo Lifecycle Manager', 'Contents/Resources/chrome-recovery', 'Contents/Resources/update-installer']) {
     const absolute = join(bundle, path), stat = await lstat(absolute);
     if (!stat.isFile() || !(stat.mode & 0o111) || !inside(bundle, await realpath(absolute))) throw updateError('The downloaded app is incomplete.');
   }

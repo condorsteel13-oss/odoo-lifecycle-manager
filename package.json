@@ -1,7 +1,7 @@
 {
   "name": "odoo-lifecycle-manager",
   "productName": "Odoo Lifecycle Manager",
-  "version": "1.8.4",
+  "version": "1.8.5",
   "description": "Odoo Online discovery, expiry rules and database lifecycle actions with Safe mode",
   "author": "condorsteel13-oss",
   "private": true,
@@ -48,6 +48,10 @@
       {
         "from": "dist-electron/chrome-background",
         "to": "chrome-background"
+      },
+      {
+        "from": "dist-electron/chrome-recovery",
+        "to": "chrome-recovery"
       },
       {
         "from": "dist-electron/update-installer",
