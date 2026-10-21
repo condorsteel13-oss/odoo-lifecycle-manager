@@ -6,6 +6,20 @@ import { join } from 'node:path';
 import { AppError } from './errors';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 type ChromeDisplay = boolean | 'background';
+export async function waitForChromeEndpoint(endpoint:string,port:string,attempts=100,intervalMs=100):Promise<boolean>{
+  for(let i=0;i<attempts;i++){
+    try{
+      const response=await fetch(`${endpoint}/json/version`,{signal:AbortSignal.timeout(500)});
+      if(response.ok){
+        const info=await response.json() as {webSocketDebuggerUrl?:string};
+        const ws=new URL(info.webSocketDebuggerUrl??'');
+        if(ws.protocol==='ws:'&&['127.0.0.1','localhost'].includes(ws.hostname)&&ws.port===port)return true;
+      }
+    }catch{}
+    if(i<attempts-1)await new Promise(resolve=>setTimeout(resolve,intervalMs));
+  }
+  return false;
+}
 // Dedicated app-owned profile only. Never attach to, copy, or inspect a personal profile.
 export class ManualChrome {
   private process: ChildProcess | null = null;
@@ -71,23 +85,11 @@ export class ManualChrome {
     const endpoint = `http://127.0.0.1:${port}`;
     this.endpoint = endpoint;
     this.endpointAvailable = false;
-    for (let i = 0; i < 100; i++) {
-      try {
-        const response = await fetch(`${endpoint}/json/version`, { signal: AbortSignal.timeout(500) });
-        const info = await response.json() as { webSocketDebuggerUrl?: string };
-        const ws = new URL(info.webSocketDebuggerUrl ?? '');
-        if (ws.protocol === 'ws:' && ['127.0.0.1', 'localhost'].includes(ws.hostname) && ws.port === String(port)) { this.endpointAvailable = true; return endpoint; }
-      } catch {}
-      if (this.process !== child || (child.exitCode !== null || child.signalCode !== null)) {
-        // Chrome can hand the request to a surviving process before the
-        // launcher exits. Accept that process if the private endpoint is up.
-        if (await this.isAvailable()) return endpoint;
-        throw new AppError('LOGIN_CANCELLED', 'The app’s Chrome window was closed. Start sign-in again.');
-      }
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    // The Chrome executable may exit while macOS starts the browser process.
+    // Keep polling for the full startup window before treating launch as failed.
+    if(await waitForChromeEndpoint(endpoint,String(port))){this.endpointAvailable=true;return endpoint;}
     await this.close();
-    throw new AppError('CHROME_LAUNCH', 'The dedicated Chrome window could not start. Close its previous window and try again.');
+    throw new AppError('CHROME_LAUNCH', 'The dedicated Chrome window did not finish starting. Close its previous window and try again.');
   }
   async close() {
     const child = this.process;
@@ -95,7 +97,7 @@ export class ManualChrome {
     if (child.exitCode !== null || child.signalCode !== null) {
       // A launcher can exit after handing off to Chrome. Ask the owned
       // browser to close over its loopback-only DevTools connection.
-      if (await this.isAvailable()) {
+      if (this.endpointAvailable && await this.isAvailable()) {
         try {
           const version = await fetch(`${this.endpoint}/json/version`, { signal: AbortSignal.timeout(750) }).then(r => r.json()) as { webSocketDebuggerUrl?: string };
           if (version.webSocketDebuggerUrl && typeof WebSocket !== 'undefined') await new Promise<void>(resolve => {
