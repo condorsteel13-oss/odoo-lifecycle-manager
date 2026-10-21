@@ -8,7 +8,7 @@ import { extractUpdate, validateBundle } from '../electron/update-archive';
 import { parseRelease, REPOSITORY, verifyDownload } from '../electron/update-release';
 const version: string = JSON.parse(await readFile('package.json', 'utf8')).version;
 const name = `Odoo-Lifecycle-Manager-${version}-universal.zip`;
-const file = resolve(process.argv[2] ?? `release/v${version}/${name}`);
+const file = resolve(process.argv[2] ?? `release/${name}`);
 const hash = createHash('sha256');
 for await (const chunk of createReadStream(file)) hash.update(chunk);
 const digest = hash.digest('hex');

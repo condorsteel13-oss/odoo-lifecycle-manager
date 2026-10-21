@@ -1,12 +1,13 @@
 import yauzl, { type Entry, type ZipFile } from 'yauzl';
-import { createWriteStream } from 'node:fs';
-import { mkdir, chmod, realpath, symlink, lstat } from 'node:fs/promises';
+import { updateDisk } from './update-disk';
 import { dirname, join, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { updateError } from './update-release';
 const exec = promisify(execFile);
+const { createWriteStream } = updateDisk;
+const { mkdir, chmod, realpath, symlink, lstat } = updateDisk.promises;
 export const BUNDLE_NAME = 'Odoo Lifecycle Manager.app';
 export const BUNDLE_ID = 'local.odoo.lifecycle-manager';
 const inside = (root: string, path: string) => path === root || path.startsWith(root + sep);

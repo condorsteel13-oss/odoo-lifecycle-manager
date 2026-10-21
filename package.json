@@ -1,7 +1,7 @@
 {
   "name": "odoo-lifecycle-manager",
   "productName": "Odoo Lifecycle Manager",
-  "version": "1.8.3",
+  "version": "1.8.4",
   "description": "Odoo Online discovery, expiry rules and database lifecycle actions with Safe mode",
   "author": "condorsteel13-oss",
   "private": true,
@@ -18,7 +18,8 @@
     "start": "electron .",
     "package:mac": "npm run build && electron-builder --mac --universal --publish never",
     "package:dir": "npm run build && electron-builder --mac --universal --dir --publish never",
-    "check:public-login": "tsx scripts/check-public-login.ts"
+    "check:public-login": "tsx scripts/check-public-login.ts",
+    "check:update-package": "node --import tsx scripts/check-update-package.ts && node --import tsx scripts/check-update-electron.ts"
   },
   "dependencies": {
     "cheerio": "1.2.0",

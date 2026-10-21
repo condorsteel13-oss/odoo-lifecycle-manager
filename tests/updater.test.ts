@@ -84,7 +84,7 @@ describe('updater lifecycle coordination', () => {
   });
   it('releases the lock and cancels the installer if idle connection cleanup fails', async () => {
     const f = await fixture(); await f.updater.check(); vi.mocked(f.deps.closeIdleConnections).mockRejectedValueOnce(new Error('fixture failure'));
-    await expect(f.updater.install()).rejects.toThrow();
+    await expect(f.updater.install()).rejects.toThrow(/Local installation failed while closing idle browser sessions/);
     expect(f.installer.cancel).toHaveBeenCalledTimes(1); expect(f.installer.commit).not.toHaveBeenCalled(); expect(f.deps.quit).not.toHaveBeenCalled(); expect(f.locked()).toBe(false); expect(f.updater.state().status).toBe('ready');
   });
   it('does not quit if the helper fails, and allows retry without another download', async () => {

@@ -1,11 +1,12 @@
-import { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { updateDisk } from './update-disk';
 import { dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import type { UpdateState } from '../src/shared/updates';
 import { AppError } from './errors';
 import { downloadRelease, latestRelease, updateError, verifyDownload, type UpdateRelease } from './update-release';
 import { BUNDLE_NAME, extractUpdate, validateBundle } from './update-archive';
+const { access, chmod, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } = updateDisk.promises;
+const { constants } = updateDisk;
 
 export interface Installer { commit(): Promise<void>; cancel(): void }
 export interface UpdateDependencies {
@@ -100,22 +101,31 @@ export class AppUpdater {
       // Gate twice: immediately, then atomically after potentially lengthy archive extraction.
       const blocked = this.deps.blockReason(); if (blocked) throw updateError(blocked);
       this.change({ status: 'preparing', message: 'Verifying and preparing the downloaded app…' });
-      const stage = await mkdtemp(join(this.directory, 'stage-'));
-      let installer: Installer | undefined, locked = false;
+      let stage: string | undefined, installer: Installer | undefined, locked = false;
+      let phase = 'creating a temporary install folder';
       try {
+        stage = await mkdtemp(join(this.directory, 'stage-'));
+        phase = 'checking the downloaded update';
         await verifyDownload(this.downloadFile, this.releaseInfo);
+        phase = 'extracting and validating the new app';
         const bundle = await this.deps.stage(this.downloadFile, join(stage, 'extracted'), this.releaseInfo.version);
+        phase = 'checking that no lifecycle started';
         this.deps.acquire(); locked = true;
+        phase = 'starting the installer helper';
         installer = await this.deps.prepare(bundle, stage, this.releaseInfo.version);
+        phase = 'closing idle browser sessions';
         await this.deps.closeIdleConnections();
+        phase = 'handing the app over to the installer';
         this.change({ status: 'installing', message: 'Restarting to install the verified update…' });
         await installer.commit();
         this.deps.quit();
       } catch (error) {
-        installer?.cancel();
+        try { installer?.cancel(); } catch { /* Preserve the original install failure. */ }
         if (locked) this.deps.release();
-        await rm(stage, { recursive: true, force: true });
-        throw error;
+        if (stage) await rm(stage, { recursive: true, force: true }).catch(() => {});
+        if (error instanceof AppError) throw error;
+        const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code) ? ` (${error.code})` : '';
+        throw updateError(`Local installation failed while ${phase}${code}. The current app is unchanged. Check Applications permissions and available disk space, then try again.`);
       }
     });
   }

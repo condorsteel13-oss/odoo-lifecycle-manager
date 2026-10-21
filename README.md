@@ -1,4 +1,4 @@
-# Odoo Lifecycle Manager — macOS, V1.8.3
+# Odoo Lifecycle Manager — macOS, V1.8.4
 
 Open **Settings → How to use Lifecycle Manager** for a quick start and explanations of all six workspace sections, Safe mode, parent deletion, and activation.
 
@@ -25,15 +25,19 @@ Safe mode is on and automatic rules are off on a fresh installation. Databases w
 
 For each release, `SHA256SUMS.txt` contains the installer and ZIP checksums. Verify a downloaded file using `shasum -a 256 <filename>` and compare it with the published checksum. The ZIP is an alternative distribution of the same app.
 
-## App updates (1.8.0 and later)
+## App updates (1.8.4 and later)
 
-Install 1.8.0 once using its DMG; older versions do not contain the updater. Keep the app in `/Applications/Odoo Lifecycle Manager.app` or `~/Applications/Odoo Lifecycle Manager.app`, in a folder your user can write to. Running from a DMG, a build folder, or a read-only Applications folder allows downloads but blocks installation.
+Install 1.8.4 once using its DMG. Versions 1.8.0–1.8.3 can download updates but cannot extract the replacement app inside Electron; 1.8.4 fixes this and supports subsequent in-app installations. Versions before 1.8.0 do not contain the updater. Keep the app in `/Applications/Odoo Lifecycle Manager.app` or `~/Applications/Odoo Lifecycle Manager.app`, in a folder your user can write to. Running from a DMG, a build folder, or a read-only Applications folder allows downloads but blocks installation.
 
 In **Settings → App updates**, **Automatically check and download updates** is on by default. The app checks the latest stable GitHub release 15 seconds after startup and every six hours while open. Turn this off for manual **Check for updates** and **Download update** controls. Downloaded updates show **Restart to install**. The app never installs on ordinary quit and never restarts automatically.
 
 Installation is blocked while any operation or lifecycle is active, including email delays, native confirmation dialogs and pending database reviews. The main process checks again after extracting the download and takes an exclusive lock before closing idle browser connections. Scheduled work and new actions cannot start while that lock is held. A separate installer waits for the app process to exit naturally; it never kills the app. It replaces only the app bundle, retains `.Odoo Lifecycle Manager.previous.app` next to it, and restores that backup if replacement or launch fails. Settings, encrypted sessions, reports and action records stay in Application Support.
 
+Update extraction and cleanup use Electron’s native `original-fs` API so the replacement `app.asar` is handled as a physical file. The app’s ordinary ASAR support stays enabled. Local installation failures report the step that failed instead of suggesting an internet problem.
+
 Updates use the public GitHub API for this exact repository, with no account credentials. The updater accepts only a newer stable version's exact universal ZIP, verifies its size and GitHub-generated SHA-256 digest, restricts HTTPS download redirects, rejects unsafe archive paths and symlinks, and validates bundle identity and version. This verifies download integrity relative to GitHub; it is **not** an Apple signature or notarization. The updater does not remove quarantine or disable Gatekeeper. macOS may still require app-specific approval for an unsigned release.
+
+Before publishing, run `npm run check:update-package`. This validates the real ZIP in both Node and an isolated Electron process, including physical `app.asar` extraction and cleanup; it loads no account sessions.
 
 To publish an update, build the universal DMG and ZIP, upload both plus `SHA256SUMS.txt` to a stable `vX.Y.Z` release in this repository, and publish it. The ZIP name must remain `Odoo-Lifecycle-Manager-X.Y.Z-universal.zip`; GitHub must report the completed asset's `sha256:` digest. Keep the bundle ID and executable name unchanged. Drafts, prereleases, downgrades and releases without a verifiable universal ZIP cannot install. No update server or Apple credentials are needed.
 
