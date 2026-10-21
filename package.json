@@ -1,7 +1,7 @@
 {
   "name": "odoo-lifecycle-manager",
   "productName": "Odoo Lifecycle Manager",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "Odoo Online discovery, expiry rules and database lifecycle actions with Safe mode",
   "author": "condorsteel13-oss",
   "private": true,
@@ -26,6 +26,7 @@
     "playwright": "1.64.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
+    "yauzl": "3.4.0",
     "zod": "4.6.7"
   },
   "build": {
@@ -46,6 +47,10 @@
       {
         "from": "dist-electron/chrome-background",
         "to": "chrome-background"
+      },
+      {
+        "from": "dist-electron/update-installer",
+        "to": "update-installer"
       }
     ],
     "mac": {
@@ -69,6 +74,7 @@
     "@types/node": "26.6.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@types/yauzl": "3.4.0",
     "@vitejs/plugin-react": "6.1.2",
     "electron": "44.9.0",
     "electron-builder": "26.15.3",

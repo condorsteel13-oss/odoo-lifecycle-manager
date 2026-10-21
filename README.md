@@ -1,4 +1,4 @@
-# Odoo Lifecycle Manager — macOS, V1.7.1
+# Odoo Lifecycle Manager — macOS, V1.8.0
 
 Open **Settings → How to use Lifecycle Manager** for a quick start and explanations of all six workspace sections, Safe mode, parent deletion, and activation.
 
@@ -25,6 +25,18 @@ Safe mode is on and automatic rules are off on a fresh installation. Databases w
 
 For each release, `SHA256SUMS.txt` contains the installer and ZIP checksums. Verify a downloaded file using `shasum -a 256 <filename>` and compare it with the published checksum. The ZIP is an alternative distribution of the same app.
 
+## App updates (1.8.0 and later)
+
+Install 1.8.0 once using its DMG; older versions do not contain the updater. Keep the app in `/Applications/Odoo Lifecycle Manager.app` or `~/Applications/Odoo Lifecycle Manager.app`, in a folder your user can write to. Running from a DMG, a build folder, or a read-only Applications folder allows downloads but blocks installation.
+
+In **Settings → App updates**, **Automatically check and download updates** is on by default. The app checks the latest stable GitHub release 15 seconds after startup and every six hours while open. Turn this off for manual **Check for updates** and **Download update** controls. Downloaded updates show **Restart to install**. The app never installs on ordinary quit and never restarts automatically.
+
+Installation is blocked while any operation or lifecycle is active, including email delays, native confirmation dialogs and pending database reviews. The main process checks again after extracting the download and takes an exclusive lock before closing idle browser connections. Scheduled work and new actions cannot start while that lock is held. A separate installer waits for the app process to exit naturally; it never kills the app. It replaces only the app bundle, retains `.Odoo Lifecycle Manager.previous.app` next to it, and restores that backup if replacement or launch fails. Settings, encrypted sessions, reports and action records stay in Application Support.
+
+Updates use the public GitHub API for this exact repository, with no account credentials. The updater accepts only a newer stable version's exact universal ZIP, verifies its size and GitHub-generated SHA-256 digest, restricts HTTPS download redirects, rejects unsafe archive paths and symlinks, and validates bundle identity and version. This verifies download integrity relative to GitHub; it is **not** an Apple signature or notarization. The updater does not remove quarantine or disable Gatekeeper. macOS may still require app-specific approval for an unsigned release.
+
+To publish an update, build the universal DMG and ZIP, upload both plus `SHA256SUMS.txt` to a stable `vX.Y.Z` release in this repository, and publish it. The ZIP name must remain `Odoo-Lifecycle-Manager-X.Y.Z-universal.zip`; GitHub must report the completed asset's `sha256:` digest. Keep the bundle ID and executable name unchanged. Drafts, prereleases, downgrades and releases without a verifiable universal ZIP cannot install. No update server or Apple credentials are needed.
+
 ## Build from source
 
 Requirements: macOS 13+, Xcode Command Line Tools (Swift), Node.js 22.12+ (Node 24 recommended), npm and installed Google Chrome for browser tests.
@@ -49,7 +61,7 @@ To create the universal Mac app, DMG and ZIP:
 npm run package:mac
 ```
 
-The build compiles the Chrome helper for both CPU architectures and combines them. electron-builder produces `release/mac-universal/Odoo Lifecycle Manager.app` and universal DMG/ZIP artifacts in `release/`. The production bundle excludes development source maps, private local data and test browser downloads. A Developer ID certificate and Apple notarization credentials are needed for a future notarized distribution.
+The build compiles the Chrome and update installer helpers for both CPU architectures and combines them. electron-builder produces `release/mac-universal/Odoo Lifecycle Manager.app` and universal DMG/ZIP artifacts in `release/`. The production bundle excludes development source maps, private local data and test browser downloads. This distribution and its update mechanism remain unsigned; no Apple Developer membership is required.
 
 ## Preview
 
@@ -136,6 +148,7 @@ The exact locations are displayed in Settings. Electron normally places them ben
 ~/Library/Application Support/Odoo Lifecycle Manager/
   data/state.json                 settings, latest snapshot, simulation history, live action log
   chrome-profile/                 dedicated Chrome session and local browser storage
+  updates/                        update preferences, verified downloads and installer results
 ```
 
 The JSON file is written with file/directory sync and atomic rename, with owner-only permissions; its containing directory and browser profile are owner-only. Keep the browser profile private: persistent cookies are sensitive even though no password is saved by app code. Reports contain database names and proposed names, which may also be confidential business metadata.

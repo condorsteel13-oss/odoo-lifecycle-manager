@@ -27,3 +27,13 @@ const api: AppAPI = {
   subscribe: callback => { const listener = (_event: unknown, state: AppState) => callback(state); ipcRenderer.on('app:state-changed', listener); return () => ipcRenderer.removeListener('app:state-changed', listener); },
 };
 contextBridge.exposeInMainWorld('lifecycle', Object.freeze(api));
+
+const updates: import('../src/shared/updates').UpdateAPI = {
+  state: () => ipcRenderer.invoke('updates:state'),
+  check: () => ipcRenderer.invoke('updates:check'),
+  download: () => ipcRenderer.invoke('updates:download'),
+  install: () => ipcRenderer.invoke('updates:install'),
+  setAutomatic: enabled => ipcRenderer.invoke('updates:automatic', enabled),
+  subscribe: callback => { const listener = (_event: unknown, state: import('../src/shared/updates').UpdateState) => callback(state); ipcRenderer.on('updates:changed', listener); return () => ipcRenderer.removeListener('updates:changed', listener); },
+};
+contextBridge.exposeInMainWorld('updates', Object.freeze(updates));

@@ -145,3 +145,38 @@ test('parent deletion defaults off and the Automation choice persists independen
  await page.getByRole('button',{name:'Automation',exact:true}).click();await expect(page.getByRole('checkbox',{name:'Delete original after successful activation',exact:true})).not.toBeChecked();
  const state=await page.evaluate(()=>window.lifecycle.state());expect(state.settings.lifecycleEnabled).toBe(false);expect(state.lifecyclePreferences.safeMode).toBe(true);expect(state.liveHistory).toEqual([]);
 });
+
+test('update preferences persist and development builds cannot download or install',async()=>{
+ directory=await mkdtemp(join(tmpdir(),'odoo-update-desktop-'));
+ const launch=()=>electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
+ desktop=await launch();let page=await desktop.firstWindow();await page.getByRole('button',{name:'Settings',exact:true}).click();
+ await expect(page.getByRole('heading',{name:'App updates',exact:true})).toBeVisible();
+ const automatic=page.getByRole('checkbox',{name:'Automatically check and download updates',exact:true});await expect(automatic).toBeChecked();
+ await expect(page.getByRole('button',{name:'Check for updates',exact:true})).toBeDisabled();
+ await expect(page.evaluate(()=>window.updates.install())).rejects.toThrow(/packaged/);
+ await automatic.uncheck();await expect.poll(async()=>(await page.evaluate(()=>window.updates.state())).automatic).toBe(false);
+ expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toEqual([]);
+ await page.screenshot({path:'test-results/update-settings.png',fullPage:true});
+ await desktop.close();desktop=await launch();page=await desktop.firstWindow();await page.getByRole('button',{name:'Settings',exact:true}).click();
+ await expect(page.getByRole('checkbox',{name:'Automatically check and download updates',exact:true})).not.toBeChecked();
+ expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toEqual([]);
+});
+
+test('update UI shows download progress and blocks restart until lifecycle work is idle',async()=>{
+ directory=await mkdtemp(join(tmpdir(),'odoo-update-ui-'));
+ desktop=await electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
+ const page=await desktop.firstWindow();await page.getByRole('button',{name:'Settings',exact:true}).click();await expect(page.getByRole('heading',{name:'App updates',exact:true})).toBeVisible();
+ const baseline=await page.evaluate(()=>window.updates.state());
+ const publish=async(patch:Partial<typeof baseline>)=>desktop.evaluate(({BrowserWindow},state)=>{BrowserWindow.getAllWindows()[0].webContents.send('updates:changed',state);},{...baseline,supported:true,latestVersion:'1.9.0',...patch});
+ await publish({status:'downloading',percent:42,message:'Downloading version 1.9.0…'});
+ await expect(page.getByRole('progressbar',{name:'Update download'})).toHaveAttribute('value','42');
+ await publish({status:'ready',percent:100,message:'Version 1.9.0 is ready.',installBlockReason:'Wait for the current operation or lifecycle to finish before restarting.'});
+ await expect(page.getByRole('button',{name:'Restart to install 1.9.0',exact:true})).toBeDisabled();
+ await expect(page.getByRole('button',{name:'Update ready · View in Settings',exact:true})).toBeVisible();
+ await page.screenshot({path:'test-results/update-ready-waiting.png',fullPage:true});
+ await publish({status:'ready',percent:100,message:'Version 1.9.0 is ready.',installBlockReason:null});
+ await expect(page.getByRole('button',{name:'Restart to install 1.9.0',exact:true})).toBeEnabled();
+ // Renderer display is a fixture; the real main process still rejects installation in development.
+ await page.getByRole('button',{name:'Restart to install 1.9.0',exact:true}).click();await expect(page.getByRole('alert')).toContainText('packaged');
+ expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toEqual([]);
+});

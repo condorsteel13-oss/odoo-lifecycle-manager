@@ -49,6 +49,7 @@ export function AppGuide() {
         <summary>Settings <span>Choose defaults and find help</span></summary>
         <p>Set the activation email delay (default: 3 minutes) and copy name template, then click <strong>Save duplication settings</strong>. Use <code>{'{name}-copy'}</code> or <code>{'{name}-copy-{date}'}</code>; the app adds a number if the name is already used.</p>
         <p>The email delay starts when the copy is available, or after a resend if one is needed. Each new cycle keeps its saved delay. Queued copy names stay unchanged.</p>
+        <p><strong>App updates</strong> checks GitHub and downloads new versions while the app is open. Click <strong>Restart to install</strong> when ready. Installation waits for all operations and open confirmations to finish. Install the app in Applications first; the previous app is kept as a backup. Unsigned builds may still need macOS approval.</p>
         <p>Also choose Safe mode and browser visibility here. Closing browsers keeps saved sessions; clearing sessions requires signing in again. Reports and the live action log stay on this Mac. Diagnostics explain connection or workflow problems.</p>
       </details>
     </div>

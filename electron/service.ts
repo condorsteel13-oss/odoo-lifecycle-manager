@@ -28,6 +28,7 @@ export class AppService {
   private live: LiveService;
   private mailbox: MailConnection;
   private workflowController:AbortController|null=null;
+  private updateLocked = false;
   private confirmAutomatic:()=>Promise<boolean>;
   private runnerWait?: (signal:AbortSignal)=>Promise<void>;
   constructor(private store: LocalStore, profile: string, browserRoot: string, private publish: (state: AppState) => void, browser?: ReadOnlyConnection, confirm: NativeConfirmation = async () => false, options:{cipher?:SessionCipher;mailbox?:MailConnection;confirmAutomatic?:()=>Promise<boolean>;runnerWait?:(signal:AbortSignal)=>Promise<void>}={}) {
@@ -60,6 +61,26 @@ export class AppService {
     }, 60000);
   }
   getState(): AppState { return structuredClone(this.state); }
+  updateBlockReason(): string | null {
+    if (this.updateLocked) return 'An update is being installed.';
+    if (this.state.busy || this.workflowController || this.state.lifecycleRun?.active) return 'Wait for the current operation or lifecycle to finish before restarting.';
+    const review = this.live.pendingReview();
+    if (review && Date.parse(review.expiresAt) >= Date.now()) return 'Finish or cancel the open database confirmation before restarting.';
+    return null;
+  }
+  acquireUpdateLock() {
+    const reason = this.updateBlockReason();
+    if (reason) throw new AppError('UPDATE_BUSY', reason);
+    // Synchronous acquisition prevents the scheduler or an IPC action winning an await race.
+    this.updateLocked = true; this.state.busy = true; this.emit();
+  }
+  releaseUpdateLock() { this.updateLocked = false; this.state.busy = false; this.emit(); }
+  assertNotUpdating() { if (this.updateLocked) throw new AppError('UPDATE_BUSY', 'Wait for update installation to finish.'); }
+  async closeForUpdate() {
+    if (!this.updateLocked || this.workflowController || this.state.lifecycleRun?.active) throw new AppError('UPDATE_BUSY', 'A lifecycle must finish before updating.');
+    // No abort or live.cancel here: only an already-idle app may reach this path.
+    await this.browser.close(); await this.mailbox.close();
+  }
   private emit() {
     this.state.nextCheckAt = nextCheck(this.state.lastAttemptAt, this.state.settings)?.toISOString() ?? null;
     this.publish(this.getState());
@@ -88,6 +109,7 @@ export class AppService {
     this.emit();
   }
   private async exclusive<T>(action: () => Promise<T>): Promise<T> {
+    this.assertNotUpdating();
     if (this.state.busy) throw new AppError('BUSY', 'Wait for the current operation or cancel the connection first.');
     const startingProgress=this.state.lifecycleRun;
     this.state.busy = true; this.cancelled = false; this.emit();

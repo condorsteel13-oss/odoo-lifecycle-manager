@@ -47,3 +47,12 @@
 .guide-sections p{font-size:12px;margin-top:9px;color:#65776c}
 .guide-sections code{overflow-wrap:anywhere;color:#294c3d}
 @media(max-width:1100px){.guide-start,.guide-sections{grid-template-columns:1fr}.guide-start{gap:14px}}
+
+.update-settings { grid-column: 1 / -1; }
+.update-option { display: flex; align-items: center; gap: 10px; margin: 18px 0 8px; font-weight: 600; }
+.update-option input { width: 17px; height: 17px; accent-color: #6558d9; }
+.update-status { padding: 12px 14px; margin: 16px 0; background: #f5f4fb; border-radius: 8px; line-height: 1.5; }
+.update-wait { color: #825713; }
+.update-settings progress { width: 100%; height: 10px; accent-color: #6558d9; }
+.update-notice { display: flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid #d9d4f7; border-radius: 7px; color: #5845aa; background: #f5f3ff; font-size: 12px; cursor: pointer; }
+.update-notice:focus-visible { outline: 2px solid #6558d9; outline-offset: 3px; }

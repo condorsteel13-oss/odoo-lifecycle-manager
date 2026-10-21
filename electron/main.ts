@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, session, safeStorage } from 'electron';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { AppUpdater, installationLocation, prepareInstaller, productionUpdateDownloads } from './updater';
 import { pathToFileURL } from 'node:url';
 import { writeFile } from 'node:fs/promises';
 import { AppService } from './service';
@@ -10,6 +11,7 @@ import { AppError, safeError } from './errors';
 let window: BrowserWindow | null = null;
 let service: AppService;
 let quitting = false;
+let updater: AppUpdater | undefined;
 // Only used by local integration tests to isolate app data. This cannot change network policy.
 const testDirectory = !app.isPackaged ? process.env.LIFECYCLE_TEST_DATA : undefined;
 if (testDirectory) app.setPath('userData', testDirectory);
@@ -23,7 +25,7 @@ else {
     const rendererURL = dev ? 'http://127.0.0.1:5173/' : pathToFileURL(rendererFile).href;
     session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     session.defaultSession.setPermissionCheckHandler(() => false);
-    service = new AppService(new LocalStore(join(root, 'data')), join(root, 'chrome-profile'), app.isPackaged ? join(process.resourcesPath, 'browser-binaries') : join(app.getAppPath(), 'browser-binaries'), state => { if (window && !window.isDestroyed()) window.webContents.send('app:state-changed', state); }, undefined, async review => {
+    service = new AppService(new LocalStore(join(root, 'data')), join(root, 'chrome-profile'), app.isPackaged ? join(process.resourcesPath, 'browser-binaries') : join(app.getAppPath(), 'browser-binaries'), state => { if (window && !window.isDestroyed()) window.webContents.send('app:state-changed', state); updater?.emit(); }, undefined, async review => {
       if(!window || window.isDestroyed()) return false;
       const deleting=review.action==='delete';
       const choice=await dialog.showMessageBox(window,{type:'warning',title:deleting?'Permanently delete original database?':'Create a real testing copy?',message:deleting?`Permanently delete ${review.original.name}?`:`Duplicate ${review.original.name} as ${review.copyName}?`,detail:deleting?`Original: ${review.original.url}\nVerified copy to retain: ${review.copyName}\n\nAll original data will be removed for all users. A related subscription may be closed. Your backup and integrity confirmations are recorded. This cannot be undone. Only this original will be deleted.`:`Source: ${review.original.url}\nNew copy: https://${review.copyName}.odoo.com\n\nA real testing copy will be created with external actions neutralized. ${review.deleteOriginal===false?'Parent deletion is disabled for this cycle. Both databases will be retained.':'The original is retained until a separate deletion confirmation.'} ${review.workflow==='guided'?'The app will handle activation and verification after creation.':'Use Activate copy after completion.'} If Odoo reports a different activation recipient, the app sends the activation email to the signed-in database user. Mailbox sign-in is manual, and actual copy expiry must be verified after activation.`,buttons:['Cancel',deleting?'Permanently delete original':'Create testing copy'],defaultId:0,cancelId:0,noLink:true});
@@ -33,7 +35,27 @@ else {
       const choice=await dialog.showMessageBox(window,{type:'warning',title:'Turn Safe mode off?',message:'Allow lifecycle steps without per-action confirmations?',detail:'Run lifecycle and enabled automatic lifecycle rules will create a testing copy, activate it using the connected mailbox, and verify it. Only when Delete original after successful activation is enabled will the original be permanently deleted. A related subscription may be closed by deletion. Backups and business-data review remain your responsibility; automatic mode does not claim to have performed them. Identity, activation, expiry, and accounting exclusions remain enforced. Turning this off does not start a cycle immediately, but enabled rules can run at the next scheduled check.',buttons:['Keep Safe mode on','Turn Safe mode off'],defaultId:0,cancelId:0,noLink:true});return choice.response===1;
     }});
     await service.initialize();
+    const updateRoot = join(root, 'updates');
+    const bundle = dirname(dirname(dirname(app.getPath('exe'))));
+    const locationBlock = app.isPackaged && process.platform === 'darwin' ? await installationLocation(bundle, app.getPath('home')) : null;
+    updater = new AppUpdater(updateRoot, app.getVersion(), app.isPackaged && process.platform === 'darwin', state => {
+      if (window && !window.isDestroyed()) window.webContents.send('updates:changed', state);
+    }, {
+      ...productionUpdateDownloads,
+      blockReason: () => service.updateBlockReason() ?? locationBlock,
+      acquire: () => { if (locationBlock) throw new AppError('UPDATE_LOCATION', locationBlock); service.acquireUpdateLock(); },
+      release: () => service.releaseUpdateLock(),
+      closeIdleConnections: () => service.closeForUpdate(),
+      prepare: (source, directory, version) => prepareInstaller({ helper: join(process.resourcesPath, 'update-installer'), bundle, currentVersion: app.getVersion(), root: updateRoot }, source, directory, version),
+      quit: () => { updater?.dispose(); quitting = true; app.quit(); },
+    });
+    await updater.initialize();
     const commands: Record<string, (...args: any[]) => unknown> = {
+      'updates:state': () => updater!.state(),
+      'updates:check': () => updater!.check(),
+      'updates:download': () => updater!.download(),
+      'updates:install': () => updater!.install(),
+      'updates:automatic': value => updater!.setAutomatic(value),
       'app:workflow-preferences':input=>service.saveWorkflowPreferences(input),
       'app:lifecycle-preferences':input=>service.saveLifecyclePreferences(input),
       'app:lifecycle-run':(id,name)=>service.runLifecycle(id,name),
@@ -68,7 +90,7 @@ else {
     };
     for (const [channel, handler] of Object.entries(commands)) ipcMain.handle(channel, async (event, ...args) => {
       if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== rendererURL) throw new Error('Untrusted IPC sender.');
-      try { return await handler(...args); } catch (error) { const safe = safeError(error); throw new Error(safe.message); }
+      try { if (channel.startsWith('app:') && channel !== 'app:state') service.assertNotUpdating(); return await handler(...args); } catch (error) { const safe = safeError(error); throw new Error(safe.message); } finally { updater?.emit(); }
     });
     const createWindow = () => {
       window = new BrowserWindow({ width: 1380, height: 940, minWidth: 1050, minHeight: 740, backgroundColor: '#f7f8fa', title: 'Odoo Lifecycle Manager', titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 22, y: 22 }, webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
@@ -85,7 +107,9 @@ else {
   app.on('window-all-closed', () => app.quit());
   app.on('before-quit', event => {
     if (quitting || !service) return;
-    event.preventDefault(); quitting = true;
+    event.preventDefault();
+    if (updater?.installing) return;
+    quitting = true; updater?.dispose();
     void service.dispose().finally(() => app.quit());
   });
 }

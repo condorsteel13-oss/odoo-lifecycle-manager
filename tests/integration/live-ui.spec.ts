@@ -20,6 +20,7 @@ test('manual live UI separates creation, verification and deletion with all atte
   const oldRecord={id:'old-cycle',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),original:discovery.databases[0],copyName:oldName,phase:'awaiting-expiry',copy:{...discovery.databases[0],name:oldName},copyUuid:'22222222-2222-4222-8222-222222222222',verifiedAt:null,message:'Fixture: previous copy removed manually.',backupReference:null,integrityNotes:null};
   const state={workflowPreferences:{activationEmailDelayMinutes:3,copyNameTemplate:'{name}-copy-{date}'},lifecyclePreferences:{safeMode:true},lifecycleRun:null,lifecycleQueue:[],browserPreferences:{headless:true},savedConnections:{odoo:true,mail:false},mailConnection:{status:'disconnected',email:null,checkedAt:null},odooCheckedAt:null,settings:{...DEFAULT_SETTINGS,deleteAfterActivation:true},discovery,history:[],liveHistory:[oldRecord],liveSafetyLock:false,connection:'connected',busy:false,diagnostics:[],lastAttemptAt:null,nextCheckAt:null,dataDirectory:'/fixture',browserDirectory:'/fixture'};
   await page.addInitScript(initial=>{
+    (window as any).updates={state:async()=>({currentVersion:'1.8.0',latestVersion:null,automatic:false,supported:false,status:'idle',percent:0,checkedAt:null,message:'Offline UI fixture',installBlockReason:null}),subscribe:()=>()=>{}};
     const state:any=initial;let publish:(state:any)=>void=()=>{};let copyName='';let pending:any=null;
     (window as any).fixtureCalls=[];
     const notify=()=>publish(structuredClone(state));

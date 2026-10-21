@@ -271,3 +271,33 @@ describe('optional parent deletion and lifecycle progress',()=>{
   expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(f.browser.activateFromEmail).not.toHaveBeenCalled();expect(f.browser.deleteLive).not.toHaveBeenCalled();await restored.dispose();
  });
 });
+
+describe('idle-only app update gate',()=>{
+ it('blocks installation throughout duplication, email waiting, activation and deletion',async()=>{
+  const f=await setup();f.pendingActivation();await f.service.connectMail();await f.service.saveLifecyclePreferences({safeMode:false});
+  for(const method of ['duplicateLive','sendActivation','activateFromEmail','deleteLive'] as const){
+   const original=vi.mocked(f.browser[method]).getMockImplementation()!;
+   vi.mocked(f.browser[method]).mockImplementation((async(...args:any[])=>{
+    expect(f.service.updateBlockReason()).toMatch(/finish/);expect(()=>f.service.acquireUpdateLock()).toThrow(/finish/);
+    return (original as any)(...args);
+   }) as any);
+  }
+  const wait=f.wait.getMockImplementation()!;
+  f.wait.mockImplementation(async signal=>{expect(()=>f.service.acquireUpdateLock()).toThrow(/finish/);expect(signal.aborted).toBe(false);await wait(signal);});
+  await f.service.runLifecycle(f.original().database.id,'fixture-copy');
+  expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(f.browser.activateFromEmail).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).toHaveBeenCalledTimes(1);
+  expect(f.service.updateBlockReason()).toBeNull();expect(f.browser.close).not.toHaveBeenCalled();
+ });
+ it('blocks an idle review and a native confirmation, then permits updating after cancellation',async()=>{
+  const f=await setup();const review=await f.service.runLifecycle(f.original().database.id,'fixture-copy');
+  expect(f.service.getState().busy).toBe(false);expect(()=>f.service.acquireUpdateLock()).toThrow(/confirmation/);
+  f.confirm.mockImplementation(async()=>{expect(()=>f.service.acquireUpdateLock()).toThrow(/finish/);return false;});
+  await f.service.confirmLive(confirmation(review!));await f.service.cancelLive();expect(f.service.updateBlockReason()).toBeNull();
+  f.service.acquireUpdateLock();await expect(f.service.runMonitor()).rejects.toThrow(/update/);await expect(f.service.runLifecycle(f.original().database.id,'fixture-copy')).rejects.toThrow(/update/);
+  expect(f.browser.duplicateLive).not.toHaveBeenCalled();await f.service.closeForUpdate();expect(f.browser.close).toHaveBeenCalledTimes(1);
+  f.service.releaseUpdateLock();expect(f.service.getState().busy).toBe(false);
+ });
+ it('cannot close provider sessions without acquiring the idle lock',async()=>{
+  const f=await setup();await expect(f.service.closeForUpdate()).rejects.toThrow();expect(f.browser.close).not.toHaveBeenCalled();expect(f.mail.close).not.toHaveBeenCalled();
+ });
+});
