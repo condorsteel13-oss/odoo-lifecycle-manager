@@ -1,4 +1,4 @@
-# Odoo Lifecycle Manager — macOS, V1.8.0
+# Odoo Lifecycle Manager — macOS, V1.8.1
 
 Open **Settings → How to use Lifecycle Manager** for a quick start and explanations of all six workspace sections, Safe mode, parent deletion, and activation.
 
