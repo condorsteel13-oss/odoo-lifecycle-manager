@@ -105,3 +105,43 @@ test('Safe mode opt-out and scheduled scope persist without starting any live wo
  const restored=await page.evaluate(()=>window.lifecycle.state());expect(restored.lifecyclePreferences.safeMode).toBe(false);expect(restored.settings).toEqual(configured.settings);expect(restored.lifecycleRun).toBeNull();expect(restored.liveHistory).toEqual([]);
  await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('switch',{name:'Safe mode',exact:true}).click();await expect(page.getByRole('switch',{name:'Safe mode',exact:true})).toBeChecked();
 });
+
+test('duplication preferences validate, preview, reach simulations, and survive restart',async()=>{
+ directory=await mkdtemp(join(tmpdir(),'odoo-workflow-settings-'));
+ const launch=()=>electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
+ desktop=await launch();let page=await desktop.firstWindow();
+ await page.getByRole('button',{name:'Settings',exact:true}).click();
+ const delay=page.getByLabel('Activation email delay (minutes)'),template=page.getByLabel('Copy name template'),save=page.getByRole('button',{name:'Save duplication settings',exact:true});
+ await expect(delay).toHaveValue('3');await expect(template).toHaveValue('{name}-copy-{date}');await expect(save).toBeDisabled();
+ await delay.fill('61');await expect(save).toBeDisabled();await expect(page.getByRole('alert')).toContainText('0 to 60');
+ await delay.fill('5');await template.fill('copy');await expect(save).toBeDisabled();await expect(page.getByRole('alert')).toContainText('Include {name}');
+ await template.fill('{name}-backup');await expect(page.locator('.name-preview')).toContainText('example-db-backup');await save.click();
+ await expect(page.getByText('Duplication and activation settings saved.',{exact:true})).toBeVisible();
+ const configured=await page.evaluate(()=>window.lifecycle.state());
+ expect(configured.workflowPreferences).toEqual({activationEmailDelayMinutes:5,copyNameTemplate:'{name}-backup'});expect(configured.settings.lifecycleEnabled).toBe(false);expect(configured.settings.monitoringEnabled).toBe(false);expect(configured.liveHistory).toEqual([]);
+ await expect(page.evaluate(()=>window.lifecycle.saveWorkflowPreferences({activationEmailDelayMinutes:2.5,copyNameTemplate:'{name}-copy'}))).rejects.toThrow(/0 to 60/);
+ await page.evaluate(async()=>{const state=await window.lifecycle.state();await window.lifecycle.simulate([state.discovery!.databases[0].id]);});
+ const simulated=await page.evaluate(()=>window.lifecycle.state());expect(simulated.history[0].proposedName).toBe('atlas-staging-backup');
+ await page.screenshot({path:'test-results/workflow-settings.png',fullPage:true});
+ await desktop.close();desktop=await launch();page=await desktop.firstWindow();
+ await page.getByRole('button',{name:'Settings',exact:true}).click();
+ await expect(page.getByLabel('Activation email delay (minutes)')).toHaveValue('5');await expect(page.getByLabel('Copy name template')).toHaveValue('{name}-backup');
+ expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toEqual([]);
+});
+
+test('parent deletion defaults off and the Automation choice persists independently of Safe mode',async()=>{
+ directory=await mkdtemp(join(tmpdir(),'odoo-deletion-setting-'));
+ const launch=()=>electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
+ desktop=await launch();let page=await desktop.firstWindow();
+ await page.getByRole('button',{name:'Automation',exact:true}).click();
+ const deletion=page.getByRole('checkbox',{name:'Delete original after successful activation',exact:true});
+ await expect(deletion).not.toBeChecked();await expect(page.getByText(/Off by default for testing: keep the original/)).toBeVisible();
+ await deletion.check();await page.getByRole('button',{name:'Save monitoring rule',exact:true}).click();
+ await expect.poll(async()=>(await page.evaluate(()=>window.lifecycle.state())).settings.deleteAfterActivation).toBe(true);
+ await deletion.uncheck();await page.getByRole('button',{name:'Save monitoring rule',exact:true}).click();
+ await expect.poll(async()=>(await page.evaluate(()=>window.lifecycle.state())).settings.deleteAfterActivation).toBe(false);
+ await page.screenshot({path:'test-results/automation-retain-original.png',fullPage:true});
+ await desktop.close();desktop=await launch();page=await desktop.firstWindow();
+ await page.getByRole('button',{name:'Automation',exact:true}).click();await expect(page.getByRole('checkbox',{name:'Delete original after successful activation',exact:true})).not.toBeChecked();
+ const state=await page.evaluate(()=>window.lifecycle.state());expect(state.settings.lifecycleEnabled).toBe(false);expect(state.lifecyclePreferences.safeMode).toBe(true);expect(state.liveHistory).toEqual([]);
+});

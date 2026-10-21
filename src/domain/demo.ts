@@ -1,6 +1,6 @@
 import type { Database, Discovery, Settings } from '../shared/types';
 import { localCalendarDate } from './dates';
-export const DEFAULT_SETTINGS: Settings = { monitoringEnabled: false, lifecycleEnabled:false, thresholdDays: 3, intervalHours: 6, scope: 'all', databaseIds: [] };
+export const DEFAULT_SETTINGS: Settings = { monitoringEnabled: false, lifecycleEnabled:false, deleteAfterActivation:false, thresholdDays: 3, intervalHours: 6, scope: 'all', databaseIds: [] };
 export function demoDiscovery(now = new Date()): Discovery {
   function date(days: number) { const d = new Date(now); d.setDate(d.getDate() + days); return localCalendarDate(d); }
   const seed: Array<Partial<Database> & Pick<Database, 'name' | 'expiresAt'>> = [

@@ -17,16 +17,17 @@ function target(name='fixture',id=uuid,parentUuid:string|null=null):LiveInspecti
 }
 const cleanups:(()=>Promise<void>)[]=[];
 afterEach(async()=>{for(const cleanup of cleanups.splice(0))await cleanup();vi.useRealTimers();});
-async function setup(){
+async function setup(deleteAfterActivation=true){
+ vi.useFakeTimers({toFake:['Date']});
  const dir=await mkdtemp(join(tmpdir(),'lifecycle-workflow-')),store=new LocalStore(join(dir,'data'));
  let original=target(),copy=target('fixture-copy',copyUuid,uuid),created=false,deleted=false,activated=true;
  const rows=()=>[...(!deleted?[{database:original.database,uuid:original.uuid,parentUuid:null}]:[]),...(created?[{database:copy.database,uuid:copy.uuid,parentUuid:uuid}]:[])];
  const discovery=()=>({source:'odoo' as const,databases:rows().map(row=>({...row.database,observedAt:new Date().toISOString(),expirationObservedAt:new Date().toISOString()})),refreshedAt:new Date().toISOString(),coverage:'visible-list' as const,pages:1,warnings:[]});
  const browser:ReadOnlyConnection&LiveConnection={connect:vi.fn(async()=>discovery()),refresh:vi.fn(async()=>discovery()),close:vi.fn(async()=>{}),checkCopyName:vi.fn(async()=>{}),liveList:vi.fn(async()=>rows()),inspectLive:vi.fn(async id=>{if(id===original.database.id&&!deleted)return structuredClone(original);if(id===copy.database.id&&created)return structuredClone(copy);throw new AppError('DATABASE_MISSING','Copy not ready');}),duplicateLive:vi.fn(async(_source,name)=>{copy=target(name,copyUuid,uuid);created=true;}),deleteLive:vi.fn(async()=>{deleted=true;}),activation:vi.fn(async()=>({pending:!activated,activated,userEmail:'current@example.com',recipientEmail:'old@example.com',expiresAt:new Date(Date.now()+2*86400000).toISOString()})),sendActivation:vi.fn(async()=>{}),resumeActivation:vi.fn(async()=>{}),activateFromEmail:vi.fn(async()=>{activated=true;})};
  const mail:MailConnection={connect:vi.fn(async()=>'current@example.com'),finishLogin:vi.fn(),check:vi.fn(async()=>'current@example.com'),close:vi.fn(async()=>{}),setHeadless:vi.fn(async()=>{}),findActivationLink:vi.fn(async t=>`https://www.odoo.com/odoo-enterprise/confirm-database/${t.copyName}/${'a'.repeat(40)}?email=current%40example.com&username=current%40example.com&country_id=38`)};
- const confirm=vi.fn(async()=>true),confirmAutomatic=vi.fn(async()=>true),wait=vi.fn(async(_signal:AbortSignal)=>{});
+ const confirm=vi.fn(async()=>true),confirmAutomatic=vi.fn(async()=>true),wait=vi.fn(async(_signal:AbortSignal)=>{vi.setSystemTime(Date.now()+15_000);});
  const createService=()=>new AppService(store,join(dir,'profile'),'unused',()=>{},browser,confirm,{mailbox:mail,confirmAutomatic,runnerWait:wait});
- const service=createService();await service.initialize();await service.connect();
+ const service=createService();await service.initialize();await service.connect();await service.saveSettings({...service.getState().settings,deleteAfterActivation});
  cleanups.push(async()=>{await service.dispose();await rm(dir,{recursive:true,force:true});});
  return {service,store,browser,mail,confirm,confirmAutomatic,wait,createService,original:()=>original,copy:()=>copy,setOriginal:(x:LiveInspection)=>{original=x;},setCopy:(x:LiveInspection)=>{copy=x;},pendingActivation:()=>{activated=false;},setCreated:(value:boolean)=>{created=value;}};
 }
@@ -65,7 +66,7 @@ describe('Safe mode and automatic lifecycle',()=>{
  it('Stop during expiry waiting prevents deletion and does not claim data integrity',async()=>{
   const f=await setup();const duplicate=vi.mocked(f.browser.duplicateLive).getMockImplementation()!;vi.mocked(f.browser.duplicateLive).mockImplementation(async(...args)=>{await duplicate(...args);f.setCopy({...f.copy(),database:{...f.copy().database,remainingDays:0}});});
   f.wait.mockImplementation(async()=>{await f.service.stopLifecycle();});await f.service.saveLifecyclePreferences({safeMode:false});
-  await expect(f.service.runLifecycle(f.original().database.id,'fixture-copy')).rejects.toThrow(/stopped/);expect(f.browser.deleteLive).not.toHaveBeenCalled();expect(f.service.getState().lifecycleRun).toBeNull();expect(f.service.getState().liveHistory[0].integrityNotes).toBeNull();
+  await expect(f.service.runLifecycle(f.original().database.id,'fixture-copy')).rejects.toThrow(/stopped/);expect(f.browser.deleteLive).not.toHaveBeenCalled();expect(f.service.getState().lifecycleRun).toMatchObject({active:false,progress:{status:'stopped'}});expect(f.service.getState().liveHistory[0].integrityNotes).toBeNull();
  });
  it('keeps uncertain deletion locked and does not auto-resume',async()=>{
   const f=await setup();await f.service.saveLifecyclePreferences({safeMode:false});vi.mocked(f.browser.deleteLive).mockRejectedValue(new Error('uncertain'));
@@ -144,5 +145,129 @@ describe('scheduled lifecycle rules',()=>{
   const record={original:db,copy,copyName:copy.name,copyUuid} as LiveRecord;
   expect(scheduledCandidates([copy],settings,[],[record])).toHaveLength(0);
   expect(scheduledCandidates([{...copy,remainingDays:31}],settings,[],[record])).toHaveLength(1);
+ });
+});
+
+describe('workflow preferences in the lifecycle service',()=>{
+ it('persists preferences without enabling, scheduling or starting a lifecycle',async()=>{
+  const f=await setup(),before=f.service.getState();
+  await f.service.saveWorkflowPreferences({activationEmailDelayMinutes:5,copyNameTemplate:'{name}-backup'});
+  expect(f.service.getState().settings).toEqual(before.settings);expect(f.service.getState().lastAttemptAt).toBe(before.lastAttemptAt);
+  await f.service.dispose();const restored=f.createService();await restored.initialize();
+  expect(restored.getState().workflowPreferences).toEqual({activationEmailDelayMinutes:5,copyNameTemplate:'{name}-backup'});
+  expect(f.browser.duplicateLive).not.toHaveBeenCalled();expect(f.browser.deleteLive).not.toHaveBeenCalled();await restored.dispose();
+ });
+ it('uses the template in simulations and newly scheduled jobs; keeps queued names fixed',async()=>{
+  const f=await setup();await f.service.saveWorkflowPreferences({activationEmailDelayMinutes:3,copyNameTemplate:'{name}-backup'});
+  await f.service.simulate([f.original().database.id]);expect(f.service.getState().history[0].proposedName).toBe('fixture-backup');
+  await f.service.saveSettings({...f.service.getState().settings,lifecycleEnabled:true});await f.service.runMonitor();
+  expect(f.service.getState().lifecycleQueue[0].copyName).toBe('fixture-backup');
+  await f.service.saveWorkflowPreferences({activationEmailDelayMinutes:0,copyNameTemplate:'{name}-new'});
+  expect(f.service.getState().lifecycleQueue[0].copyName).toBe('fixture-backup');expect(f.browser.duplicateLive).not.toHaveBeenCalled();
+ });
+ it('honors a delivery delay longer than the polling timeout and sends only once',async()=>{
+  const f=await setup();f.pendingActivation();await f.service.saveWorkflowPreferences({activationEmailDelayMinutes:60,copyNameTemplate:'{name}-copy'});
+  await f.service.saveLifecyclePreferences({safeMode:false});const started=Date.now(),read=vi.mocked(f.mail.findActivationLink).getMockImplementation()!;
+  vi.mocked(f.mail.findActivationLink).mockImplementation(async target=>{expect(Date.now()-started).toBeGreaterThanOrEqual(60*60_000);return read(target);});
+  f.wait.mockImplementation(async()=>{vi.setSystemTime(Date.now()+10*60_000);});
+  await f.service.runLifecycle(f.original().database.id,'fixture-copy');
+  expect(f.browser.sendActivation).toHaveBeenCalledTimes(1);expect(f.mail.findActivationLink).toHaveBeenCalledTimes(1);expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).toHaveBeenCalledTimes(1);
+ });
+ it('Stop during the delivery wait prevents mailbox reading, activation and deletion',async()=>{
+  const f=await setup();f.pendingActivation();await f.service.saveLifecyclePreferences({safeMode:false});
+  f.wait.mockImplementation(async()=>{expect(f.service.getState().lifecycleRun?.stage).toMatch(/waiting for activation email \(3:00\)/);await f.service.stopLifecycle();});
+  await expect(f.service.runLifecycle(f.original().database.id,'fixture-copy')).rejects.toThrow(/stopped/);
+  expect(f.mail.findActivationLink).not.toHaveBeenCalled();expect(f.browser.activateFromEmail).not.toHaveBeenCalled();expect(f.browser.deleteLive).not.toHaveBeenCalled();
+ });
+ it('rejects malformed preferences at the main-process boundary without overwriting saved settings',async()=>{
+  const f=await setup(),before=f.service.getState().workflowPreferences;
+  await expect(f.service.saveWorkflowPreferences({activationEmailDelayMinutes:61,copyNameTemplate:'{name}-copy'})).rejects.toThrow(/0 to 60/);
+  await expect(f.service.saveWorkflowPreferences({activationEmailDelayMinutes:3,copyNameTemplate:'../unsafe'})).rejects.toThrow(/name/);
+  expect(f.service.getState().workflowPreferences).toEqual(before);
+ });
+});
+
+describe('optional parent deletion and lifecycle progress',()=>{
+ it('runs an automatic rule through activation, keeps both databases, and suppresses repeat copies',async()=>{
+  const f=await setup(false);f.pendingActivation();await f.service.saveLifecyclePreferences({safeMode:false});
+  await f.service.saveSettings({...f.service.getState().settings,lifecycleEnabled:true});await f.service.runMonitor();
+  const state=f.service.getState(),record=state.liveHistory[0];
+  expect(record).toMatchObject({phase:'copy-retained',deleteOriginal:false,progress:{step:'retained',status:'done',percent:100}});
+  expect(state.lifecycleRun).toMatchObject({active:false,progress:{step:'retained',percent:100}});
+  expect(state.lifecycleQueue[0]).toMatchObject({status:'complete',message:expect.stringContaining('both databases retained')});
+  expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(f.browser.activateFromEmail).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).not.toHaveBeenCalled();
+  expect(state.discovery!.databases.map(db=>db.name)).toContain('fixture');expect(state.discovery!.databases.map(db=>db.name)).toContain(record.copyName);
+  expect(record.progressEvents?.filter(event=>event.status==='done').map(event=>event.step)).toEqual(expect.arrayContaining(['duplicate-done','created','email-received','activation-done','verifying','retained']));
+  expect(record.progressEvents?.some(event=>['deleting','deleted'].includes(event.step))).toBe(false);
+  await f.service.runMonitor();expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);
+ });
+ it('asks only for creation in Safe mode with deletion off; later enabling deletion cannot reopen this cycle',async()=>{
+  const f=await setup(false),review=await f.service.runLifecycle(f.original().database.id,'fixture-copy');
+  expect(review).toMatchObject({action:'duplicate',deleteOriginal:false});
+  expect(await f.service.confirmLive(confirmation(review!))).toBeNull();expect(f.confirm).toHaveBeenCalledTimes(1);
+  const record=f.service.getState().liveHistory[0];expect(record.phase).toBe('copy-retained');
+  await f.service.saveSettings({...f.service.getState().settings,deleteAfterActivation:true});
+  await expect(f.service.continueLifecycle(record.id)).rejects.toThrow(/cannot be continued/);
+  await expect(f.service.prepareDelete(record.id)).rejects.toThrow(/disabled/);expect(f.browser.deleteLive).not.toHaveBeenCalled();
+ });
+ it('keeps copy-only policy across interruption, restart and an enabled deletion setting',async()=>{
+  const f=await setup(false);f.pendingActivation();await f.service.saveLifecyclePreferences({safeMode:false});
+  f.wait.mockImplementationOnce(async()=>{await f.service.stopLifecycle();});
+  await expect(f.service.runLifecycle(f.original().database.id,'fixture-copy')).rejects.toThrow(/stopped/);
+  const id=f.service.getState().liveHistory[0].id;await f.service.dispose();
+  const restored=f.createService();await restored.initialize();await restored.connect();
+  await restored.saveSettings({...restored.getState().settings,deleteAfterActivation:true});
+  await restored.continueLifecycle(id);expect(restored.getState().liveHistory[0]).toMatchObject({phase:'copy-retained',deleteOriginal:false});
+  expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(f.browser.sendActivation).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).not.toHaveBeenCalled();await restored.dispose();
+ });
+ it('turning deletion off invalidates an already prepared deletion review',async()=>{
+  const f=await setup(),creation=await f.service.runLifecycle(f.original().database.id,'fixture-copy');
+  const deletion=await f.service.confirmLive(confirmation(creation!));expect(deletion?.action).toBe('delete');
+  await f.service.saveSettings({...f.service.getState().settings,deleteAfterActivation:false});
+  await expect(f.service.confirmLive(confirmation(deletion!))).rejects.toThrow(/invalid, used/);
+  await f.service.continueLifecycle(f.service.getState().liveHistory[0].id);
+  expect(f.service.getState().liveHistory[0].phase).toBe('copy-retained');expect(f.browser.deleteLive).not.toHaveBeenCalled();
+ });
+ it('publishes named duplication and deletion stages before their requests and completion only after verification',async()=>{
+  const f=await setup();f.pendingActivation();await f.service.saveLifecyclePreferences({safeMode:false});
+  const duplicate=vi.mocked(f.browser.duplicateLive).getMockImplementation()!,remove=vi.mocked(f.browser.deleteLive).getMockImplementation()!,activate=vi.mocked(f.browser.activateFromEmail).getMockImplementation()!;
+  vi.mocked(f.browser.duplicateLive).mockImplementation(async(...args)=>{expect(f.service.getState().lifecycleRun).toMatchObject({active:true,progress:{message:'Duplicating fixture',step:'duplicating'}});await duplicate(...args);});
+  vi.mocked(f.browser.activateFromEmail).mockImplementation(async(...args)=>{expect(f.service.getState().lifecycleRun?.progress).toMatchObject({message:'Activating fixture-copy',step:'activating'});await activate(...args);});
+  vi.mocked(f.browser.deleteLive).mockImplementation(async(...args)=>{expect(f.service.getState().lifecycleRun?.progress).toMatchObject({message:'Deleting fixture',step:'deleting',percent:90});await remove(...args);});
+  await f.service.runLifecycle(f.original().database.id,'fixture-copy');const record=f.service.getState().liveHistory[0];
+  expect(record.progress).toMatchObject({message:'fixture deleted',status:'done',percent:100});
+  const messages=record.progressEvents!.map(event=>event.message);
+  for(const message of ['Duplicating fixture','fixture duplication done','fixture-copy created','fixture-copy created, waiting for activation email','Activation email received for fixture-copy','Activating fixture-copy','fixture-copy activation done','Deleting fixture','fixture deleted'])expect(messages).toContain(message);
+ });
+ it('shows a failed email check at timeout without claiming receipt, activation, or deletion',async()=>{
+  const f=await setup(false);f.pendingActivation();await f.service.saveLifecyclePreferences({safeMode:false});
+  vi.mocked(f.mail.findActivationLink).mockRejectedValue(new AppError('MAIL_NOT_ARRIVED','Not delivered'));
+  f.wait.mockImplementation(async()=>{vi.setSystemTime(Date.now()+5*60_000);});
+  await expect(f.service.runLifecycle(f.original().database.id,'fixture-copy')).rejects.toThrow(/15 minutes/);
+  const record=f.service.getState().liveHistory[0];expect(record.progress).toMatchObject({step:'waiting-email',status:'failed',message:'Activation email check for fixture-copy unsuccessful'});
+  expect(record.progressEvents?.some(event=>['email-received','activation-done','deleted','retained'].includes(event.step))).toBe(false);
+  expect(f.browser.activateFromEmail).not.toHaveBeenCalled();expect(f.browser.deleteLive).not.toHaveBeenCalled();
+  expect((await f.store.load()).data.liveHistory[0].progress).toEqual(record.progress);
+ });
+ it.each(['duplicate','activation','delete'])('keeps an uncertain %s outcome below 100 percent and never invents success',async kind=>{
+  const f=await setup();f.pendingActivation();await f.service.saveLifecyclePreferences({safeMode:false});
+  if(kind==='duplicate'){vi.mocked(f.browser.duplicateLive).mockRejectedValue(new Error('private request details'));f.wait.mockImplementation(async()=>{vi.setSystemTime(Date.now()+16*60_000);});}
+  if(kind==='activation')vi.mocked(f.browser.activateFromEmail).mockRejectedValue(new Error('private request details'));
+  if(kind==='delete')vi.mocked(f.browser.deleteLive).mockRejectedValue(new Error('private request details'));
+  await expect(f.service.runLifecycle(f.original().database.id,'fixture-copy')).rejects.toThrow();
+  const record=f.service.getState().liveHistory[0];expect(record.progress?.status).toBe('uncertain');expect(record.progress!.percent).toBeLessThan(100);
+  expect(record.progressEvents?.some(event=>event.step===(kind==='duplicate'?'created':kind==='activation'?'activation-done':'deleted')&&event.status==='done')).toBe(false);
+  expect(JSON.stringify(record)).not.toContain('private request');
+ });
+ it('reports cancellation before submission and never sends a request',async()=>{
+  const f=await setup(false),review=await f.service.runLifecycle(f.original().database.id,'fixture-copy');f.confirm.mockResolvedValueOnce(false);
+  await f.service.confirmLive(confirmation(review!));expect(f.service.getState().lifecycleRun?.progress).toMatchObject({status:'stopped',detail:expect.stringContaining('cancelled before submission')});
+  expect(f.service.getState().liveHistory).toEqual([]);expect(f.browser.duplicateLive).not.toHaveBeenCalled();
+ });
+ it('marks a persisted in-flight step interrupted on restart without resuming any database action',async()=>{
+  const f=await setup(false),review=await f.service.prepareDuplicate(f.original().database.id,'fixture-copy');await f.service.confirmLive(confirmation(review));
+  await f.service.dispose();const restored=f.createService();await restored.initialize();
+  expect(restored.getState().liveHistory[0].progress).toMatchObject({status:'stopped',step:'duplicating'});expect(restored.getState().lifecycleRun).toBeNull();
+  expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(f.browser.activateFromEmail).not.toHaveBeenCalled();expect(f.browser.deleteLive).not.toHaveBeenCalled();await restored.dispose();
  });
 });

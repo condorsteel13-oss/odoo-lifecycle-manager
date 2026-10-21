@@ -1,3 +1,5 @@
+import type { LifecycleProgress } from './progress';
+import type { WorkflowPreferences } from './workflow';
 import type { LiveRecord, LiveReview, LiveConfirmation } from './live';
 export const READ_ONLY_LABEL = 'Discovery and simulation are read-only. Safe mode confirms each live action.';
 export type Availability = 'available' | 'unavailable' | 'unknown';
@@ -20,6 +22,7 @@ export interface Discovery {
 }
 export interface Settings {
   lifecycleEnabled:boolean;
+  deleteAfterActivation:boolean;
   monitoringEnabled: boolean; thresholdDays: number; intervalHours: 6 | 12 | 24;
   scope: 'all' | 'selected'; databaseIds: string[];
 }
@@ -39,10 +42,11 @@ export interface ScheduledCycle {
 }
 export type ConnectionStatus = 'demo' | 'disconnected' | 'connecting' | 'reading' | 'connected' | 'expired' | 'blocked';
 export interface AppState {
+  workflowPreferences: WorkflowPreferences;
   setupRequired:boolean;
   browserPreferences: { headless:boolean };
   lifecyclePreferences: { safeMode:boolean };
-  lifecycleRun: { recordId:string|null; stage:string; stopping:boolean } | null;
+  lifecycleRun: { recordId:string|null; stage:string; stopping:boolean; active:boolean; progress?:LifecycleProgress } | null;
   lifecycleQueue:ScheduledCycle[];
   savedConnections: { odoo:boolean; mail:boolean };
   mailConnection: { status:ConnectionStatus; email:string|null; checkedAt:string|null };
@@ -54,6 +58,7 @@ export interface AppState {
   dataDirectory: string; browserDirectory: string;
 }
 export interface AppAPI {
+  saveWorkflowPreferences(input: WorkflowPreferences): Promise<void>;
   saveLifecyclePreferences(input:{safeMode:boolean}):Promise<void>;
   runLifecycle(databaseId:string,copyName:string):Promise<LiveReview|null>;
   continueLifecycle(recordId:string):Promise<LiveReview|null>;

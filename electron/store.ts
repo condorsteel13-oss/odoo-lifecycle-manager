@@ -1,3 +1,4 @@
+import { DEFAULT_WORKFLOW_PREFERENCES } from '../src/shared/workflow';
 import { mkdir, readFile, writeFile, rename, chmod, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DEFAULT_SETTINGS } from '../src/domain/demo';
@@ -9,7 +10,7 @@ export class LocalStore {
   async load(): Promise<{ data: Persisted; recovered: boolean }> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     await chmod(this.directory, 0o700);
-    const empty = (): Persisted => ({ version: 1, lifecycleQueue:[], lifecyclePreferences:{safeMode:true}, browserPreferences:{headless:true}, savedConnections:{odoo:false,mail:false}, settings: { ...DEFAULT_SETTINGS }, discovery: null, history: [], lastAttemptAt: null, liveHistory: [], liveSafetyLock: false });
+    const empty = (): Persisted => ({ version: 1, workflowPreferences:{...DEFAULT_WORKFLOW_PREFERENCES}, lifecycleQueue:[], lifecyclePreferences:{safeMode:true}, browserPreferences:{headless:true}, savedConnections:{odoo:false,mail:false}, settings: { ...DEFAULT_SETTINGS }, discovery: null, history: [], lastAttemptAt: null, liveHistory: [], liveSafetyLock: false });
     try {
       const raw = await readFile(this.path, 'utf8');
       try { return { data: persistedSchema.parse(JSON.parse(raw)), recovered: false }; }

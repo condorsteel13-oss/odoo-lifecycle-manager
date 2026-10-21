@@ -1,3 +1,4 @@
+import { makeProgress } from '../../src/shared/progress';
 import { test, expect, chromium } from '@playwright/test';
 import { createServer } from 'node:http';
 import { readFile, readdir } from 'node:fs/promises';
@@ -17,7 +18,7 @@ test('manual live UI separates creation, verification and deletion with all atte
   discovery.databases.push({...discovery.databases[0],name:'example-accounting-0805',id:'https://example-accounting-0805.odoo.com',url:'https://example-accounting-0805.odoo.com'});
   const oldName=`fixture-copy-${new Date().toISOString().slice(0,10).replaceAll('-','')}`;
   const oldRecord={id:'old-cycle',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),original:discovery.databases[0],copyName:oldName,phase:'awaiting-expiry',copy:{...discovery.databases[0],name:oldName},copyUuid:'22222222-2222-4222-8222-222222222222',verifiedAt:null,message:'Fixture: previous copy removed manually.',backupReference:null,integrityNotes:null};
-  const state={lifecyclePreferences:{safeMode:true},lifecycleRun:null,lifecycleQueue:[],browserPreferences:{headless:true},savedConnections:{odoo:true,mail:false},mailConnection:{status:'disconnected',email:null,checkedAt:null},odooCheckedAt:null,settings:DEFAULT_SETTINGS,discovery,history:[],liveHistory:[oldRecord],liveSafetyLock:false,connection:'connected',busy:false,diagnostics:[],lastAttemptAt:null,nextCheckAt:null,dataDirectory:'/fixture',browserDirectory:'/fixture'};
+  const state={workflowPreferences:{activationEmailDelayMinutes:3,copyNameTemplate:'{name}-copy-{date}'},lifecyclePreferences:{safeMode:true},lifecycleRun:null,lifecycleQueue:[],browserPreferences:{headless:true},savedConnections:{odoo:true,mail:false},mailConnection:{status:'disconnected',email:null,checkedAt:null},odooCheckedAt:null,settings:{...DEFAULT_SETTINGS,deleteAfterActivation:true},discovery,history:[],liveHistory:[oldRecord],liveSafetyLock:false,connection:'connected',busy:false,diagnostics:[],lastAttemptAt:null,nextCheckAt:null,dataDirectory:'/fixture',browserDirectory:'/fixture'};
   await page.addInitScript(initial=>{
     const state:any=initial;let publish:(state:any)=>void=()=>{};let copyName='';let pending:any=null;
     (window as any).fixtureCalls=[];
@@ -28,6 +29,8 @@ test('manual live UI separates creation, verification and deletion with all atte
     const readActivation=api.readActivationEmail;
     api.readActivationEmail=async()=>{await readActivation();state.liveHistory[0].activation.completion='complete';notify();};
     (window as any).fixturePendingActivation=()=>{const r=state.liveHistory[0];r.phase='activation-pending';r.activation.completion='pending';notify();};
+    (window as any).fixtureProgress=(progress:any)=>{const record=state.liveHistory[0];record.progress=progress;record.progressEvents=[...(record.progressEvents??[]),progress];state.lifecycleRun={recordId:record.id,stage:progress.message,progress,active:progress.status==='running'||progress.status==='waiting',stopping:false};notify();};
+    (window as any).fixtureTemplate=(template:string)=>{state.workflowPreferences.copyNameTemplate=template;notify();};
     (window as any).fixtureSafeMode=(safe:boolean)=>{state.lifecyclePreferences.safeMode=safe;notify();};
     api.retainCopy=async(id:string)=>{const record=state.liveHistory.find((r:any)=>r.id===id);record.phase='copy-retained';record.message='Fixture: both databases retained.';notify();};
     api.runLifecycle=async(id:string,name:string)=>{
@@ -40,6 +43,7 @@ test('manual live UI separates creation, verification and deletion with all atte
       if(guided){await api.verifyCopy();const review=await api.prepareDelete();review.workflow='guided';return review;}return null;
     };
   },state);
+  await page.clock.install();
   await page.goto(origin);await page.getByRole('button',{name:'Live actions',exact:true}).click();
   await page.getByRole('button',{name:'I removed this copy — close cycle'}).click();await expect(page.getByText('Fixture: closed after user-reported removal; history retained.')).toBeVisible();expect(await page.evaluate(()=>(window as any).fixtureCalls)).toEqual([]);await expect(page.getByRole('button',{name:'Verify copy',exact:true})).toHaveCount(0);
   expect(await page.getByLabel('Original database').locator('option').allTextContents()).not.toContain('example-accounting-0805');
@@ -48,7 +52,7 @@ test('manual live UI separates creation, verification and deletion with all atte
   await page.getByLabel('Confirm original name').fill('fixture-copy');await page.getByRole('checkbox',{name:/I authorize/}).check();await expect(create).toBeDisabled();
   await page.getByLabel('Confirm original name').fill('fixture');await expect(create).toBeEnabled();expect(await page.evaluate(()=>(window as any).fixtureCalls)).toEqual([]);await create.click();
   await expect(page.getByRole('button',{name:'Review deletion of original'})).toHaveCount(0);
-  await page.getByRole('button',{name:'Activate copy',exact:true}).click();await expect(page.getByText(/Signed-in Odoo user: current@example.com/)).toBeVisible();await page.getByRole('button',{name:'Read activation email',exact:true}).click();await expect(page.getByText('Fixture: activated; expiry still unverified.')).toBeVisible();await expect(page.getByRole('button',{name:'Review deletion of original'})).toHaveCount(0);
+  await page.getByRole('button',{name:'Activate copy',exact:true}).click();await expect(page.getByText(/Signed-in Odoo user: current@example.com/)).toBeVisible();await expect(page.getByRole('button',{name:/Email check in/})).toBeDisabled();await page.clock.fastForward(180_000);await page.getByRole('button',{name:'Read activation email',exact:true}).click();await expect(page.getByText('Fixture: activated; expiry still unverified.')).toBeVisible();await expect(page.getByRole('button',{name:'Review deletion of original'})).toHaveCount(0);
   await page.evaluate(()=>(window as any).fixturePendingActivation());
   await expect(page.getByRole('button',{name:'Read activation email',exact:true})).toHaveCount(0);
   await expect(page.getByRole('button',{name:'Review deletion of original'})).toHaveCount(0);
@@ -61,6 +65,9 @@ test('manual live UI separates creation, verification and deletion with all atte
   await page.getByRole('checkbox',{name:/subscription closure/}).check();await expect(remove).toBeEnabled();
   await page.screenshot({path:'test-results/live-deletion-review.png',fullPage:true});
   await remove.click();expect((await page.evaluate(()=>(window as any).fixtureCalls)).map((c:any)=>c.action)).toEqual(['duplicate','delete']);await expect(page.getByText('Fixture: deletion acknowledged.')).toBeVisible();
+  await page.evaluate(()=>(window as any).fixtureTemplate('{name}-backup'));
+  await page.getByLabel('Original database').selectOption('');await page.getByLabel('Original database').selectOption('https://fixture.odoo.com');
+  await expect(page.getByLabel('Copy name',{exact:true})).toHaveValue('fixture-backup');
   await page.getByLabel('Copy name',{exact:true}).fill('fixture-guided-copy');await page.getByRole('button',{name:'Run lifecycle',exact:true}).click();
   await expect(page.getByRole('heading',{name:'Review real duplication'})).toBeVisible();await expect(page.getByText(/Deletion requires a second, separate confirmation/)).toBeVisible();
   await page.getByLabel('Confirm original name').fill('fixture');await page.getByRole('checkbox',{name:/I authorize/}).check();await page.getByRole('button',{name:'Continue to create confirmation'}).click();
@@ -72,5 +79,21 @@ test('manual live UI separates creation, verification and deletion with all atte
   await page.getByLabel('Copy name',{exact:true}).fill('fixture-automatic-copy');await page.getByRole('button',{name:'Run lifecycle',exact:true}).click();
   await expect(page.getByText('Fixture: automatic cycle complete.',{exact:true})).toBeVisible();await expect(page.getByRole('region',{name:'Live action review'})).toHaveCount(0);
   expect((await page.evaluate(()=>(window as any).fixtureCalls)).filter((call:any)=>call.action==='run-lifecycle')).toHaveLength(2);
+  const sequence=[['duplicating','running'],['duplicate-done','done'],['created','done'],['waiting-email','waiting'],['email-received','done'],['activating','running'],['activation-done','done'],['deleting','running'],['deleted','done']] as const;
+  for(const [step,status] of sequence){
+    const progress=makeProgress('fixture','fixture-automatic-copy',step,status);
+    await page.evaluate(value=>(window as any).fixtureProgress(value),progress);
+    await expect(page.getByRole('progressbar',{name:'Lifecycle progress'}).first()).toHaveAttribute('value',String(progress.percent));
+    await expect(page.getByRole('status').filter({hasText:progress.message}).first()).toBeVisible();
+    if(step==='activating')await page.screenshot({path:'test-results/lifecycle-progress.png',fullPage:true});
+  }
+  await expect(page.getByRole('button',{name:'Stop lifecycle',exact:true})).toHaveCount(0);
+  await page.getByText('Step history',{exact:true}).click();await expect(page.getByText('fixture duplication done',{exact:true})).toBeVisible();
+  const failure=makeProgress('fixture','fixture-automatic-copy','deleting','uncertain','The request may have completed. Verify the outcome before continuing.');
+  await page.evaluate(value=>(window as any).fixtureProgress(value),failure);
+  await expect(page.getByRole('status').filter({hasText:'outcome uncertain'}).first()).toBeVisible();
+  await expect(page.getByRole('progressbar').first()).toHaveAttribute('value','90');
+  await page.screenshot({path:'test-results/lifecycle-uncertain.png',fullPage:true});
+
  }finally{await browser.close();server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
 });

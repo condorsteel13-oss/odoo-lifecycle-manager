@@ -1,3 +1,4 @@
+import { waitLabel } from '../src/shared/workflow';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { LiveRecord, LiveReview } from '../src/shared/live';
 import { AppError } from './errors';
@@ -21,14 +22,32 @@ export class LifecycleRunner {
   constructor(private live:LiveService,private options:RunnerOptions){}
   async finish(id:string,mode:'guided'|'automatic'):Promise<LiveReview|null>{
     const {signal}=this.options,now=this.options.now??Date.now;
-    const deadline=now()+(this.options.timeoutMs??15*60_000);
+    const timeout=this.options.timeoutMs??15*60_000;
+    let deadline=now()+timeout;
+    const wait=async()=>{
+      if(this.options.wait)await this.options.wait(signal);
+      else await delay(15_000,undefined,{signal}).catch(()=>assertRunning(signal));
+    };
+    const deliveryWait=()=>{
+      const remaining=this.live.activationEmailWaitMs(id);
+      if(!Number.isFinite(remaining))throw new AppError('LIVE_BLOCKED','The activation email wait timestamp is invalid. Inspect this copy manually.');
+      if(remaining<=0)return false;
+      // Delivery has its own delay, followed by the normal bounded polling window.
+      deadline=Math.max(deadline,now()+remaining+timeout);
+      const record=this.live.getRecord(id);
+      this.options.progress(`${record.copyName} created, waiting for activation email (${waitLabel(remaining)})`,id);
+      return true;
+    };
     while(now()<deadline){
-      assertRunning(signal);this.options.progress('Waiting for the copy and checking its identity, activation and expiry',id);
+      assertRunning(signal);
+      if(deliveryWait()){await wait();continue;}
+      const current=this.live.getRecord(id);
+      this.options.progress(current.progress?.message??`Duplicating ${current.original.name}`,id);
       try{
         await this.live.verifyCopy(id);assertRunning(signal);
-        this.options.progress(mode==='guided'?'Preparing the separate deletion review':'Verifying both databases before deleting the original',id);
+        if(!this.live.canDeleteOriginal(id)){await this.live.retainCopy(id);assertRunning(signal);return null;}
         const review=await this.live.prepareDelete(id);assertRunning(signal);
-        if(mode==='guided')return review;
+        if(mode==='guided'){await this.live.reportProgress(id,'awaiting-deletion','waiting');return review;}
         await this.live.commitAutomatic(review.ticket);
         return null;
       }catch(error){
@@ -38,7 +57,7 @@ export class LifecycleRunner {
         // Never continue or replay a deletion with an uncertain outcome.
         if(['delete-submitting','delete-unknown','deleted','copy-removed','copy-retained'].includes(record.phase))throw error;
         if(code==='LIVE_BLOCKED'&&record.phase==='activation-pending'){
-          this.options.progress('Activating the copy using the signed-in user’s connected mailbox',id);
+          await this.live.reportProgress(id,record.activation&&record.activation.link!=='not-started'?'activating':'waiting-email',record.activation&&record.activation.link!=='not-started'?'running':'waiting');
           try{
             const activation=await this.live.startActivation(id);assertRunning(signal);
             if(activation)await this.live.completeActivation(id,this.options.readLink);
@@ -46,14 +65,15 @@ export class LifecycleRunner {
           catch(activationError){
             assertRunning(signal);
             const after=this.live.getRecord(id),activationCode=activationError instanceof AppError?activationError.code:'';
-            if(activationCode!=='MAIL_NOT_ARRIVED'&&!(activationCode==='LIVE_BLOCKED'&&after.phase==='awaiting-expiry'))throw activationError;
+            if(activationCode==='ACTIVATION_EMAIL_WAITING')deliveryWait();
+            else if(activationCode==='MAIL_NOT_ARRIVED')await this.live.reportProgress(id,'waiting-email','waiting','Activation email not received yet. Retrying the mailbox read.');
+            else if(activationCode!=='MAIL_NOT_ARRIVED'&&!(activationCode==='LIVE_BLOCKED'&&after.phase==='awaiting-expiry'))throw activationError;
           }
         }else if(!(code==='DATABASE_MISSING'||code==='LIVE_BLOCKED'&&record.phase==='awaiting-expiry'))throw error;
       }
       assertRunning(signal);
-      if(this.options.wait)await this.options.wait(signal);
-      else await delay(15_000,undefined,{signal}).catch(()=>assertRunning(signal));
+      await wait();
     }
-    throw new AppError('LIFECYCLE_WAITING','The copy is not ready after 15 minutes. No deletion started. Check the log and use Continue lifecycle when ready; duplication will not be submitted again.');
+    throw new AppError('LIFECYCLE_WAITING','The copy is not ready after 15 minutes of polling, excluding the configured email delivery delay. No deletion started. Check the log and use Continue lifecycle when ready; duplication will not be submitted again.');
   }
 }

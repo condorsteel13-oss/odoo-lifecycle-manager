@@ -2,23 +2,13 @@
 import type { Database, Discovery, Simulation, SimulationStep } from '../shared/types';
 import { daysRemaining } from './dates';
 import { eventKey } from './monitor';
-export function proposeName(name: string, existing: string[], now: Date): string {
-  const stem = name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 36) || 'database';
-  const date = now.toISOString().slice(0, 10).replaceAll('-', '');
-  const base = `${stem}-copy-${date}`;
-  const used = new Set(existing.map(n => n.toLowerCase()));
-  let candidate = base;
-  for (let suffix = 2; used.has(candidate); suffix++) {
-    const tail = `-copy-${date}-${suffix}`;
-    candidate = `${stem.slice(0,50-tail.length).replace(/-$/, '')}${tail}`;
-  }
-  return candidate;
-}
-export function simulate(db: Database, discovery: Discovery, trigger: 'manual' | 'automatic', authenticated: boolean, now = new Date(), reserved: string[] = []): Simulation {
+import { proposeName } from './copy-name';
+export { proposeName } from './copy-name';
+export function simulate(db: Database, discovery: Discovery, trigger: 'manual' | 'automatic', authenticated: boolean, now = new Date(), reserved: string[] = [], template?: string): Simulation {
   const days = daysRemaining(db.expiresAt, now) ?? db.remainingDays ?? null;
   const unavailable = db.duplication === 'unavailable' || db.status === 'suspended' || db.status === 'expired' || (days !== null && days < 0);
   const blocked = unavailable || (db.source === 'odoo' && !authenticated);
-  const proposedName = proposeName(db.name, [...discovery.databases.map(d => d.name), ...reserved], now);
+  const proposedName = proposeName(db.name, [...discovery.databases.map(d => d.name), ...reserved], now, template);
   const steps: SimulationStep[] = [
     { label: 'Authentication', status: db.source === 'demo' ? 'not-performed' : authenticated ? 'passed' : 'blocked', detail: db.source === 'demo' ? 'Sample dataset. No account session used.' : authenticated ? 'Read-only session confirmed for the latest discovery.' : 'Reconnect and refresh before relying on this cached snapshot.' },
     { label: 'Original database', status: 'passed', detail: `Found in ${db.source === 'demo' ? 'sample data' : 'the visible manager list'} at ${db.observedAt}.` },

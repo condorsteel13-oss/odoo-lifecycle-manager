@@ -1,7 +1,7 @@
 {
   "name": "odoo-lifecycle-manager",
   "productName": "Odoo Lifecycle Manager",
-  "version": "1.5.2",
+  "version": "1.7.1",
   "description": "Odoo Online discovery, expiry rules and database lifecycle actions with Safe mode",
   "author": "condorsteel13-oss",
   "private": true,

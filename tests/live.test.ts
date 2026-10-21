@@ -9,12 +9,12 @@ function target(name='fixture',id=uuid,parentUuid:string|null=null):LiveInspecti
  const database:Database={id:`https://${name}.odoo.com`,name,url:`https://${name}.odoo.com`,version:'19.0',createdAt:null,expiresAt:null,remainingDays:31,expirationObservedAt:new Date().toISOString(),expirationEvidence:'Trial banner',status:'trial',designation:'testing',subscription:'none',duplication:'available',deletion:'available',restrictions:[],observedAt:new Date().toISOString(),source:'odoo'};
  return {database,uuid:id,parentUuid,neutralized:true,token:'fixture-private-token',accessToken:false,subId:false,isPaid:false,plan:'Trial'};
 }
-function setup(){
+function setup(emailDelayMinutes=0){
  let records:LiveRecord[]=[];let original=target(),copy=target('fixture-copy',copyUuid,uuid);let hasCopy=false;
  const writes:string[]=[];
  const browser:LiveConnection={activation:vi.fn(async()=>({pending:false,activated:true,userEmail:'user@example.com',recipientEmail:'user@example.com'})),sendActivation:vi.fn(async()=>{}),resumeActivation:vi.fn(async()=>{}),activateFromEmail:vi.fn(async()=>{}),checkCopyName:vi.fn(async()=>{}),liveList:vi.fn(async()=>[{database:original.database,uuid,parentUuid:null},...(hasCopy?[{database:copy.database,uuid:copyUuid,parentUuid:uuid}]:[])]),inspectLive:vi.fn(async id=>structuredClone(id===original.database.id?original:copy)),duplicateLive:vi.fn(async()=>{writes.push('duplicate');hasCopy=true;}),deleteLive:vi.fn(async()=>{writes.push('delete');vi.mocked(browser.liveList).mockResolvedValue([{database:copy.database,uuid:copyUuid,parentUuid:uuid}]);})};
  const save=vi.fn(async(next:LiveRecord[])=>{writes.push(next[0].phase);records=structuredClone(next);});const confirm=vi.fn(async()=>true);
- const service=new LiveService(browser,()=>records,save,()=>true,confirm);
+ const service=new LiveService(browser,()=>records,save,()=>true,confirm,{activationEmailDelayMinutes:()=>emailDelayMinutes});
  const duplicate=async()=>{const review=await service.prepareDuplicate(original.database.id,'fixture-copy');await service.commit({ticket:review.ticket,typedName:'fixture',acknowledged:true});};
  const deletion=async()=>{const review=await service.prepareDelete(records[0].id);return {ticket:review.ticket,typedName:'fixture',acknowledged:true,backupConfirmed:true,backupReference:'Offline backup checked today',integrityConfirmed:true,integrityNotes:'Opened orders and attachments; totals checked.',subscriptionReviewed:true};};
  return {service,browser,save,confirm,writes,duplicate,deletion,records:()=>records,original,copy,setCopy:(value:LiveInspection)=>{copy=value;},setOriginal:(value:LiveInspection)=>{original=value;}};
@@ -189,4 +189,51 @@ it('protects accounting names and URLs for every account',async()=>{
  const {isProtected}=await import('../src/shared/live');
  for(const name of ['accounting','example-accounting-0805','ACCOUNTING-PROD','https://company-accounting.odoo.com'])expect(isProtected(name)).toBe(true);
  for(const name of ['fixture','accountingtools','https://fixture.odoo.com'])expect(isProtected(name)).toBe(false);
+});
+
+describe('activation email delivery delay',()=>{
+ const pending={pending:true,activated:false,userEmail:'user@example.com',recipientEmail:'user@example.com'};
+ const link='https://www.odoo.com/odoo-enterprise/confirm-database/fixture-copy/'+('x'.repeat(140))+'?username=user%40example.com&email=user%40example.com&country_id=38';
+ it('blocks every mailbox read until the saved delay passes, including after restart',async()=>{
+  vi.useFakeTimers({toFake:['Date']});const f=setup(3);await f.duplicate();const id=f.records()[0].id;
+  vi.mocked(f.browser.activation).mockResolvedValue(pending);await f.service.startActivation(id);
+  const read=vi.fn(async()=>link);
+  await expect(f.service.completeActivation(id,read)).rejects.toMatchObject({code:'ACTIVATION_EMAIL_WAITING'});
+  vi.setSystemTime(Date.now()+179_999);
+  // A later setting of zero cannot shorten this copy's saved delay.
+  const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm,{activationEmailDelayMinutes:()=>0});
+  await expect(restarted.completeActivation(id,read)).rejects.toMatchObject({code:'ACTIVATION_EMAIL_WAITING'});
+  expect(read).not.toHaveBeenCalled();expect(f.browser.activateFromEmail).not.toHaveBeenCalled();
+  vi.setSystemTime(Date.now()+1);
+  vi.mocked(f.browser.activateFromEmail).mockImplementation(async()=>{vi.mocked(f.browser.activation).mockResolvedValue({...pending,pending:false,activated:true});});
+  await restarted.completeActivation(id,read);
+  expect(read).toHaveBeenCalledTimes(1);expect(f.records()[0].phase).toBe('copy-verified');expect(f.browser.deleteLive).not.toHaveBeenCalled();
+ });
+ it('counts from confirmed resend if that happens later, and does not reset on another activation check',async()=>{
+  vi.useFakeTimers({toFake:['Date']});const f=setup(3);await f.duplicate();const id=f.records()[0].id;
+  vi.mocked(f.browser.activation).mockResolvedValue({...pending,recipientEmail:'old@example.com'});
+  await expect(f.service.verifyCopy(id)).rejects.toThrow(/activation/);
+  vi.setSystemTime(Date.now()+120_000);
+  vi.mocked(f.browser.sendActivation).mockImplementation(async()=>{vi.setSystemTime(Date.now()+10_000);});
+  await f.service.startActivation(id);expect(f.service.activationEmailWaitMs(id)).toBe(180_000);
+  vi.setSystemTime(Date.now()+60_000);await f.service.startActivation(id);
+  expect(f.service.activationEmailWaitMs(id)).toBe(120_000);expect(f.browser.sendActivation).toHaveBeenCalledTimes(1);
+ });
+ it('skips the delivery wait when activation already succeeded or a saved handoff needs completion',async()=>{
+  const f=setup(60);await f.duplicate();const id=f.records()[0].id;
+  vi.mocked(f.browser.activation).mockResolvedValue(pending);await f.service.startActivation(id);
+  const read=vi.fn();vi.mocked(f.browser.activation).mockResolvedValue({...pending,pending:false,activated:true});
+  await f.service.completeActivation(id,read);expect(read).not.toHaveBeenCalled();
+  await f.save([{...f.records()[0],phase:'activation-pending',activation:{...f.records()[0].activation!,completion:'pending',link:'unknown'}}]);
+  await f.service.completeActivation(id,read);expect(f.browser.resumeActivation).toHaveBeenCalledTimes(1);expect(read).not.toHaveBeenCalled();expect(f.browser.deleteLive).not.toHaveBeenCalled();
+ });
+});
+
+it('rechecks deletion policy after the native confirmation, before any deletion is sent',async()=>{
+ const f=setup();await f.duplicate();await f.service.verifyCopy(f.records()[0].id);
+ const id=f.records()[0].id;await f.save([{...f.records()[0],workflow:'guided',deleteOriginal:true}]);let allowed=true;
+ const live=new LiveService(f.browser,f.records,f.save,()=>true,async()=>{allowed=false;return true;},{deletionAllowed:()=>allowed});
+ const review=await live.prepareDelete(id);
+ await expect(live.commit({ticket:review.ticket,typedName:'fixture',acknowledged:true,backupConfirmed:true,backupReference:'Offline backup',integrityConfirmed:true,integrityNotes:'Checked orders and files',subscriptionReviewed:true})).rejects.toThrow(/disabled/);
+ expect(f.browser.deleteLive).not.toHaveBeenCalled();expect(f.records()[0].phase).toBe('copy-verified');
 });

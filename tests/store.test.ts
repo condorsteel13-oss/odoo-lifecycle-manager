@@ -31,8 +31,8 @@ describe('local storage and settings', () => {
   });
   it('migrates old state with Safe mode on and automatic lifecycle disabled',async()=>{
     const dir=await mkdtemp(join(tmpdir(),'odoo-storage-test-'));dirs.push(dir);const store=new LocalStore(dir);const {data}=await store.load();
-    const old:any=structuredClone(data);delete old.lifecyclePreferences;delete old.lifecycleQueue;delete old.settings.lifecycleEnabled;
-    await writeFile(store.path,JSON.stringify(old));const loaded=await store.load();expect(loaded.recovered).toBe(false);expect(loaded.data.lifecyclePreferences.safeMode).toBe(true);expect(loaded.data.settings.lifecycleEnabled).toBe(false);expect(loaded.data.lifecycleQueue).toEqual([]);
+    const old:any=structuredClone(data);delete old.workflowPreferences;delete old.lifecyclePreferences;delete old.lifecycleQueue;delete old.settings.lifecycleEnabled;delete old.settings.deleteAfterActivation;
+    await writeFile(store.path,JSON.stringify(old));const loaded=await store.load();expect(loaded.recovered).toBe(false);expect(loaded.data.workflowPreferences).toEqual({activationEmailDelayMinutes:3,copyNameTemplate:'{name}-copy-{date}'});expect(loaded.data.lifecyclePreferences.safeMode).toBe(true);expect(loaded.data.settings.lifecycleEnabled).toBe(false);expect(loaded.data.settings.deleteAfterActivation).toBe(false);expect(loaded.data.lifecycleQueue).toEqual([]);
   });
   it('retains a closed cycle and its removal evidence across restart', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'odoo-storage-test-')); dirs.push(dir);

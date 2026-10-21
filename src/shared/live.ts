@@ -1,3 +1,4 @@
+import type { LifecycleProgress } from './progress';
 import type { Database } from './types';
 
 // Protect accounting databases across accounts without embedding customer names.
@@ -14,6 +15,11 @@ export interface ActivationRecord {
 }
 export interface LiveRecord {
   id: string; createdAt: string; updatedAt: string;
+  deleteOriginal?: boolean;
+  progress?: LifecycleProgress;
+  progressEvents?: LifecycleProgress[];
+  copyReadyAt?: string;
+  activationEmailDelayMinutes?: number;
   original: Database; originalUuid: string; copyName: string;
   originalParentUuid?: string | null;
   workflow?: 'guided' | 'automatic';
@@ -32,6 +38,7 @@ export interface LiveReview {
   ticket: string; expiresAt: string; action: 'duplicate' | 'delete';
   original: Database; copyName: string; copy: Database | null; recordId: string | null;
   workflow?: 'guided' | 'automatic';
+  deleteOriginal?: boolean;
   scheduledId?:string;
 }
 export interface LiveConfirmation {

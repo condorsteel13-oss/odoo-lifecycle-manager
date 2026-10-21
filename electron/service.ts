@@ -1,3 +1,6 @@
+import { makeProgress, withProgress } from '../src/shared/progress';
+import type { WorkflowPreferences } from '../src/shared/workflow';
+import { copyNameTemplateError } from '../src/domain/copy-name';
 import { rm } from 'node:fs/promises';
 import type { AppState, Discovery, Settings, Simulation, ScheduledCycle } from '../src/shared/types';
 import { demoDiscovery } from '../src/domain/demo';
@@ -8,7 +11,7 @@ import { dueDatabases, nextCheck } from '../src/domain/monitor';
 import { LocalStore } from './store';
 import { ReadOnlyBrowser } from './browser';
 import { AppError, safeError } from './errors';
-import { settingsSchema, browserPreferencesSchema, lifecyclePreferencesSchema, idsSchema, type Persisted } from './schemas';
+import { settingsSchema, workflowPreferencesSchema, browserPreferencesSchema, lifecyclePreferencesSchema, idsSchema, type Persisted } from './schemas';
 import { LiveService, type NativeConfirmation, type LiveConnection } from './live-service';
 import type { LiveConfirmation } from '../src/shared/live';
 import { isProtected } from '../src/shared/live';
@@ -32,12 +35,15 @@ export class AppService {
     this.browser = browser ?? new ReadOnlyBrowser(profile, browserRoot, error => this.log(error), options.cipher?new SessionVault(profile,'odoo',options.cipher):undefined);
     this.profile = profile;
     this.mailbox = options.mailbox??new MailboxBrowser(profile+'-webmail',options.cipher?new SessionVault(profile+'-webmail','mail',options.cipher):undefined);
-    this.live = new LiveService(this.browser as ReadOnlyConnection & LiveConnection, () => this.state.liveHistory, liveHistory => this.persist({liveHistory}), () => this.state.connection === 'connected' && this.state.discovery?.source === 'odoo' && !this.state.liveSafetyLock, confirm, {automaticAllowed:()=>!this.state.lifecyclePreferences.safeMode&&!!this.workflowController&&!this.workflowController.signal.aborted,beforeMutation:()=>{if(this.workflowController)assertRunning(this.workflowController.signal);}});
+    this.live = new LiveService(this.browser as ReadOnlyConnection & LiveConnection, () => this.state.liveHistory, liveHistory => this.saveLiveRecords(liveHistory), () => this.state.connection === 'connected' && this.state.discovery?.source === 'odoo' && !this.state.liveSafetyLock, confirm, {deletionAllowed:()=>this.state.settings.deleteAfterActivation,activationEmailDelayMinutes:()=>this.state.workflowPreferences.activationEmailDelayMinutes,automaticAllowed:()=>!this.state.lifecyclePreferences.safeMode&&!!this.workflowController&&!this.workflowController.signal.aborted,beforeMutation:()=>{if(this.workflowController)assertRunning(this.workflowController.signal);}});
   }
   private profile: string;
   async initialize() {
     const { data, recovered } = await this.store.load();
     this.state = { ...data, lifecycleRun:null, setupRequired:!data.discovery&&!data.savedConnections.odoo&&!data.savedConnections.mail, mailConnection:{status:'disconnected',email:null,checkedAt:null},odooCheckedAt:null, discovery: data.discovery ?? demoDiscovery(), connection: data.discovery?.source === 'odoo' ? 'disconnected' : 'demo', busy: false, diagnostics: [], nextCheckAt: null, dataDirectory: this.store.directory, browserDirectory: this.profile };
+    const interrupted=this.state.liveHistory.map(record=>record.progress&&['running','waiting'].includes(record.progress.status)&&!['deleted','copy-retained','copy-removed'].includes(record.phase)
+      ?withProgress(record,record.progress.step,['duplicate-submitting','delete-submitting','duplicate-unknown','delete-unknown'].includes(record.phase)?'uncertain':'stopped','App restarted before this step finished. Continue explicitly; no request was replayed.'):record);
+    if(interrupted.some((record,index)=>record!==this.state.liveHistory[index]))await this.persist({liveHistory:interrupted});
     if (recovered) this.log(new AppError('STORAGE_RECOVERED', 'Invalid local state was preserved as state.corrupt-*.json. Defaults loaded; monitoring is disabled and live actions are locked.'));
     if(this.state.lifecycleQueue.some(job=>job.status==='running'))await this.persist({lifecycleQueue:this.state.lifecycleQueue.map(job=>job.status==='running'?{...job,status:'attention',message:'App restarted during this cycle. Inspect its record and continue explicitly; no action was replayed.'}:job)});
     await this.browser.setHeadless?.(this.state.browserPreferences.headless);
@@ -69,16 +75,36 @@ export class AppService {
     this.emit();
   }
   private async persist(patch: Partial<Persisted>) {
-    const value: Persisted = { version: 1, lifecycleQueue:this.state.lifecycleQueue, lifecyclePreferences:this.state.lifecyclePreferences, browserPreferences:this.state.browserPreferences,savedConnections:this.state.savedConnections, settings: this.state.settings, discovery: this.state.discovery, history: this.state.history, lastAttemptAt: this.state.lastAttemptAt, liveHistory: this.state.liveHistory, liveSafetyLock: this.state.liveSafetyLock, ...patch };
+    const value: Persisted = { version: 1, workflowPreferences:this.state.workflowPreferences, lifecycleQueue:this.state.lifecycleQueue, lifecyclePreferences:this.state.lifecyclePreferences, browserPreferences:this.state.browserPreferences,savedConnections:this.state.savedConnections, settings: this.state.settings, discovery: this.state.discovery, history: this.state.history, lastAttemptAt: this.state.lastAttemptAt, liveHistory: this.state.liveHistory, liveSafetyLock: this.state.liveSafetyLock, ...patch };
     await this.store.save(value);
     Object.assign(this.state, value);
   }
+  private async saveLiveRecords(liveHistory:AppState['liveHistory']) {
+    const record=liveHistory[0],previous=this.state.liveHistory.find(value=>value.id===record?.id)?.progress;
+    await this.persist({liveHistory});
+    if(record?.progress&&JSON.stringify(record.progress)!==JSON.stringify(previous)){
+      this.state.lifecycleRun={recordId:record.id,stage:record.progress.message,progress:record.progress,active:!!this.workflowController,stopping:this.workflowController?.signal.aborted??false};
+    }
+    this.emit();
+  }
   private async exclusive<T>(action: () => Promise<T>): Promise<T> {
     if (this.state.busy) throw new AppError('BUSY', 'Wait for the current operation or cancel the connection first.');
+    const startingProgress=this.state.lifecycleRun;
     this.state.busy = true; this.cancelled = false; this.emit();
     try { return await action(); }
-    catch (error) { this.log(error); const safe = safeError(error); throw new AppError(safe.code, safe.message); }
-    finally { this.state.busy = false; this.emit(); }
+    catch (error) {
+      const safe=safeError(error),run=this.state.lifecycleRun;
+      if(run&&run!==startingProgress&&run.progress&&run.progress.status!=='uncertain'){
+        const record=this.state.liveHistory.find(value=>value.id===run.recordId);
+        if(!record||!['deleted','copy-retained','copy-removed'].includes(record.phase)){
+          const status=safe.code==='LIFECYCLE_STOPPED'?'stopped':safe.code.includes('UNKNOWN')?'uncertain':'failed';
+          if(record){try{await this.live.reportProgress(record.id,record.progress?.step??run.progress.step,status,safe.message);}catch{/* Preserve the original failure if storage is unavailable. */}}
+          else{const progress=makeProgress('database','copy',run.progress.step,status,safe.message);this.state.lifecycleRun={...run,stage:progress.message,progress,active:false};}
+        }
+      }
+      this.log(error);throw new AppError(safe.code,safe.message);
+    }
+    finally { this.state.busy = false; if(this.state.lifecycleRun)this.state.lifecycleRun.active=false; this.emit(); }
   }
   async connect() {
     return this.exclusive(async () => {
@@ -180,6 +206,13 @@ export class AppService {
     await this.browser.setHeadless?.(parsed.data.headless);await this.mailbox.setHeadless(parsed.data.headless);
     await this.checkSaved(this.state.savedConnections.odoo,this.state.savedConnections.mail);
   });}
+  async saveWorkflowPreferences(input: WorkflowPreferences) {
+    return this.exclusive(async () => {
+      const parsed = workflowPreferencesSchema.safeParse(input);
+      if (!parsed.success) throw new AppError('INVALID_SETTINGS', typeof input?.copyNameTemplate === 'string' && copyNameTemplateError(input.copyNameTemplate) || 'Choose a whole-number activation email delay from 0 to 60 minutes and a valid copy name template.');
+      await this.persist({workflowPreferences:parsed.data});
+    });
+  }
   async saveSettings(input: Settings) {
     return this.exclusive(async () => {
       const parsed = settingsSchema.safeParse(input);
@@ -187,6 +220,7 @@ export class AppService {
       const known = new Set(this.state.discovery?.databases.map(d => d.id));
       if (parsed.data.databaseIds.some(id => !known.has(id))) throw new AppError('INVALID_SELECTION', 'The database selection is out of date. Select databases from the current list.');
       if (parsed.data.scope === 'selected' && parsed.data.databaseIds.length === 0 && (parsed.data.monitoringEnabled||parsed.data.lifecycleEnabled)) throw new AppError('EMPTY_SELECTION', 'Select at least one database or choose All databases before enabling monitoring.');
+      if(parsed.data.deleteAfterActivation!==this.state.settings.deleteAfterActivation)this.live.cancel();
       await this.persist({ settings: parsed.data, lastAttemptAt: null });
     });
   }
@@ -198,7 +232,7 @@ export class AppService {
       if (databases.some(d => !d)) throw new AppError('INVALID_SELECTION', 'One selected database is no longer present. Refresh your selection.');
       if (databases.some(d => isProtected(d!.name))) throw new AppError('PROTECTED_DATABASE', 'The accounting database is excluded at your request.');
       const reports: Simulation[] = [];
-      for (const db of databases) reports.push(simulate(db!, this.state.discovery, 'manual', this.state.connection === 'connected', new Date(), reports.map(r => r.proposedName)));
+      for (const db of databases) reports.push(simulate(db!, this.state.discovery, 'manual', this.state.connection === 'connected', new Date(), reports.map(r => r.proposedName), this.state.workflowPreferences.copyNameTemplate));
       await this.persist({ history: [...reports, ...this.state.history] });
       return reports.map(r => r.id);
     });
@@ -210,14 +244,14 @@ export class AppService {
       const discovery = await this.discover();
       const matches = dueDatabases(discovery.databases, this.state.settings, this.state.history);
       const reports: Simulation[] = [];
-      for (const db of matches) reports.push(simulate(db, discovery, 'automatic', discovery.source === 'odoo' && this.state.connection === 'connected', new Date(), reports.map(r => r.proposedName)));
+      for (const db of matches) reports.push(simulate(db, discovery, 'automatic', discovery.source === 'odoo' && this.state.connection === 'connected', new Date(), reports.map(r => r.proposedName), this.state.workflowPreferences.copyNameTemplate));
       await this.persist({ discovery, history: [...reports, ...this.state.history] });
       if(this.state.settings.lifecycleEnabled&&discovery.source==='odoo'){
         const due=scheduledCandidates(discovery.databases,this.state.settings,this.state.lifecycleQueue,this.state.liveHistory);
         const reserved=[...discovery.databases.map(db=>db.name),...this.state.liveHistory.map(record=>record.copyName),...this.state.lifecycleQueue.map(job=>job.copyName)];
         const jobs:ScheduledCycle[]=due.map(database=>{
           const existing=this.state.liveHistory.find(record=>record.originalUuid===database.uuid&&!['copy-removed','copy-retained'].includes(record.phase));
-          const copyName=existing?.copyName??proposeName(database.name,reserved,new Date());reserved.push(copyName);
+          const copyName=existing?.copyName??proposeName(database.name,reserved,new Date(),this.state.workflowPreferences.copyNameTemplate);reserved.push(copyName);
           return {id:crypto.randomUUID(),database,copyName,detectedAt:new Date().toISOString(),status:'pending',recordId:existing?.id??null,message:'Expiry threshold reached. Waiting to run this lifecycle.'};
         });
         await this.persist({lifecycleQueue:[...jobs,...this.state.lifecycleQueue]});
@@ -231,6 +265,9 @@ export class AppService {
         }
       }
     });
+  }
+  private completedMessage(id?:string|null){
+    return this.state.liveHistory.find(record=>record.id===id)?.phase==='copy-retained'?'Activation and expiry verified. Deletion skipped; both databases retained.':'Lifecycle completed; original deleted and verified copy retained.';
   }
   private scheduledJob(id:string){const job=this.state.lifecycleQueue.find(job=>job.id===id);if(!job||!['pending','attention'].includes(job.status))throw new AppError('LIFECYCLE_BLOCKED','Choose a pending lifecycle from the queue.');return job;}
   private async updateJob(id:string,patch:Partial<ScheduledCycle>){await this.persist({lifecycleQueue:this.state.lifecycleQueue.map(job=>job.id===id?{...job,...patch}:job)});this.emit();}
@@ -256,7 +293,7 @@ export class AppService {
         await this.updateJob(id,{recordId});
         return this.finishLifecycle(recordId,mode,signal);
       });
-      await this.updateJob(id,{status:review?'pending':'complete',message:review?'Copy verified. Separate deletion confirmation is required.':'Lifecycle completed; the verified copy is retained.'});
+      await this.updateJob(id,{status:review?'pending':'complete',message:review?'Copy verified. Separate deletion confirmation is required.':this.completedMessage(this.state.lifecycleQueue.find(value=>value.id===id)?.recordId)});
       return review;
     }catch(error){await this.updateJob(id,{status:'attention',message:safeError(error).message});throw error;}
   }
@@ -270,14 +307,15 @@ export class AppService {
   });}
   private async workflow<T>(action:(signal:AbortSignal)=>Promise<T>){
     const controller=new AbortController();this.workflowController=controller;
-    this.state.lifecycleRun={recordId:null,stage:'Preparing the selected lifecycle',stopping:false};this.emit();
+    const progress=makeProgress('database','copy','preparing','running');
+    this.state.lifecycleRun={recordId:null,stage:progress.message,progress,stopping:false,active:true};this.emit();
     try{return await action(controller.signal);}
-    finally{this.workflowController=null;this.state.lifecycleRun=null;this.emit();}
+    finally{this.workflowController=null;if(this.state.lifecycleRun)this.state.lifecycleRun.active=false;this.emit();}
   }
   async stopLifecycle(){this.cancelled=true;this.workflowController?.abort();this.live.cancel();if(this.state.lifecycleRun){this.state.lifecycleRun.stopping=true;this.state.lifecycleRun.stage='Stopping after any action already submitted';this.emit();}}
   private async finishLifecycle(id:string,mode:'guided'|'automatic',signal:AbortSignal){
     try{return await new LifecycleRunner(this.live,{signal,wait:this.runnerWait,
-      progress:(stage,recordId)=>{this.state.lifecycleRun={recordId,stage,stopping:signal.aborted};this.emit();},
+      progress:(stage,recordId)=>{this.state.lifecycleRun={recordId,stage,progress:this.live.getRecord(recordId).progress,active:true,stopping:signal.aborted};this.emit();},
       readLink:r=>this.mailbox.findActivationLink({copyName:r.copyName,email:r.activation!.userEmail,createdAt:r.createdAt})}).finish(id,mode);
     }finally{await this.mergeLiveMetadata(id);}
   }
@@ -302,11 +340,13 @@ export class AppService {
       if(review?.scheduledId)await this.updateJob(review.scheduledId,{status:'running',message:'Awaiting the separate action confirmation.'});
       try{
         const id=await this.live.commit(input);
-        if(!id){if(review?.scheduledId)await this.updateJob(review.scheduledId,{status:'pending',message:'Confirmation cancelled. No new action submitted.'});return null;}
+        if(!id){
+          if(review){const progress=makeProgress(review.original.name,review.copyName,review.action==='duplicate'?'duplicating':'awaiting-deletion','stopped','Confirmation cancelled before submission. No new database action was sent.');this.state.lifecycleRun={recordId:review.recordId,stage:progress.message,progress,active:false,stopping:false};if(review.recordId)await this.live.reportProgress(review.recordId,progress.step,progress.status,progress.detail);}
+          if(review?.scheduledId)await this.updateJob(review.scheduledId,{status:'pending',message:'Confirmation cancelled. No new action submitted.'});return null;}
         await this.mergeLiveMetadata(id);
         if(review?.scheduledId)await this.updateJob(review.scheduledId,{recordId:id});
         const next=review?.workflow==='guided'&&review.action==='duplicate'&&signal?await this.finishLifecycle(id,'guided',signal):null;
-        if(review?.scheduledId)await this.updateJob(review.scheduledId,{status:next?'pending':'complete',message:next?'Copy verified. Separate deletion confirmation is required.':'Lifecycle completed; the verified copy is retained.'});
+        if(review?.scheduledId)await this.updateJob(review.scheduledId,{status:next?'pending':'complete',message:next?'Copy verified. Separate deletion confirmation is required.':this.completedMessage(id)});
         return next;
       }catch(error){if(review?.scheduledId)await this.updateJob(review.scheduledId,{status:'attention',message:safeError(error).message});throw error;}
     };
