@@ -10,9 +10,24 @@ type ChromeDisplay = boolean | 'background';
 export class ManualChrome {
   private process: ChildProcess | null = null;
   private endpoint: string | null = null;
+  private endpointAvailable = false;
   private display: ChromeDisplay = false;
   constructor(readonly profile: string) {}
-  get isRunning() { return !!this.process && this.process.exitCode === null && this.process.signalCode === null; }
+  get isRunning() { return (!!this.process && this.process.exitCode === null && this.process.signalCode === null) || this.endpointAvailable; }
+  // On macOS Chrome may hand a launch off to its browser process and exit the
+  // executable we spawned. The loopback DevTools endpoint is the authoritative
+  // signal that this app-owned login session is still alive.
+  async isAvailable(): Promise<boolean> {
+    if (!this.endpoint) return this.isRunning;
+    try {
+      const response = await fetch(`${this.endpoint}/json/version`, { signal: AbortSignal.timeout(750) });
+      if (!response.ok) { this.endpointAvailable = false; return false; }
+      const info = await response.json() as { webSocketDebuggerUrl?: string };
+      const ws = new URL(info.webSocketDebuggerUrl ?? '');
+      this.endpointAvailable = ws.protocol === 'ws:' && ['127.0.0.1', 'localhost'].includes(ws.hostname) && ws.port === new URL(this.endpoint).port;
+      return this.endpointAvailable;
+    } catch { this.endpointAvailable = false; return false; }
+  }
   async launch(url: string, display: ChromeDisplay = false): Promise<string> {
     if (this.isRunning && this.endpoint) {
       if(this.display!==display)throw new AppError('CHROME_MODE','Close the current browser before changing its display mode.');
@@ -54,22 +69,48 @@ export class ManualChrome {
       });}catch(error){await this.close();throw error;}
     }
     const endpoint = `http://127.0.0.1:${port}`;
+    this.endpoint = endpoint;
+    this.endpointAvailable = false;
     for (let i = 0; i < 100; i++) {
-      if (this.process !== child || (child.exitCode !== null || child.signalCode !== null)) throw new AppError('LOGIN_CANCELLED', 'The app’s Chrome window was closed. Start sign-in again.');
       try {
         const response = await fetch(`${endpoint}/json/version`, { signal: AbortSignal.timeout(500) });
         const info = await response.json() as { webSocketDebuggerUrl?: string };
         const ws = new URL(info.webSocketDebuggerUrl ?? '');
-        if (ws.protocol === 'ws:' && ['127.0.0.1', 'localhost'].includes(ws.hostname) && ws.port === String(port)) { this.endpoint = endpoint; return endpoint; }
+        if (ws.protocol === 'ws:' && ['127.0.0.1', 'localhost'].includes(ws.hostname) && ws.port === String(port)) { this.endpointAvailable = true; return endpoint; }
       } catch {}
+      if (this.process !== child || (child.exitCode !== null || child.signalCode !== null)) {
+        // Chrome can hand the request to a surviving process before the
+        // launcher exits. Accept that process if the private endpoint is up.
+        if (await this.isAvailable()) return endpoint;
+        throw new AppError('LOGIN_CANCELLED', 'The app’s Chrome window was closed. Start sign-in again.');
+      }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     await this.close();
     throw new AppError('CHROME_LAUNCH', 'The dedicated Chrome window could not start. Close its previous window and try again.');
   }
   async close() {
-    const child = this.process; this.process = null; this.endpoint = null;
-    if (!child || (child.exitCode !== null || child.signalCode !== null)) return;
+    const child = this.process;
+    if (!child) return;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      // A launcher can exit after handing off to Chrome. Ask the owned
+      // browser to close over its loopback-only DevTools connection.
+      if (await this.isAvailable()) {
+        try {
+          const version = await fetch(`${this.endpoint}/json/version`, { signal: AbortSignal.timeout(750) }).then(r => r.json()) as { webSocketDebuggerUrl?: string };
+          if (version.webSocketDebuggerUrl && typeof WebSocket !== 'undefined') await new Promise<void>(resolve => {
+            const socket = new WebSocket(version.webSocketDebuggerUrl!);
+            const timer = setTimeout(() => { socket.close(); resolve(); }, 1500);
+            socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method: 'Browser.close' })));
+            socket.addEventListener('close', () => { clearTimeout(timer); resolve(); }, { once: true });
+            socket.addEventListener('error', () => { clearTimeout(timer); resolve(); }, { once: true });
+          });
+        } catch {}
+      }
+      this.process = null; this.endpoint = null; this.endpointAvailable = false;
+      return;
+    }
+    this.process = null; this.endpoint = null; this.endpointAvailable = false;
     child.kill('SIGTERM');
     await new Promise<void>(resolve => {
       const timer=setTimeout(()=>{ child.off('exit',done); resolve(); },5000);

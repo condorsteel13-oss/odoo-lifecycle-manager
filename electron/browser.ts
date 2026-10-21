@@ -38,7 +38,7 @@ export class ReadOnlyBrowser {
       await new Promise<void>((resolve,reject) => {
         const cleanup = () => { clearTimeout(timer); clearInterval(closed); this.finish=null; this.cancel=null; };
         const timer = setTimeout(() => { cleanup(); reject(new AppError('LOGIN_TIMEOUT','Sign-in did not finish within 15 minutes. Start it again when ready.')); },15*60*1000);
-        const closed = setInterval(() => { if(!this.chrome.isRunning) this.cancel?.(); },1000);
+        const closed = setInterval(() => { void this.chrome.isAvailable().then(available=>{if(!available)this.cancel?.();}); },1000);
         this.finish=()=>{cleanup();resolve();};
         this.cancel=()=>{cleanup();reject(new AppError('LOGIN_CANCELLED','Chrome sign-in was cancelled.'));};
       });
