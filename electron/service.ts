@@ -12,9 +12,8 @@ import { LocalStore } from './store';
 import { ReadOnlyBrowser } from './browser';
 import { AppError, safeError } from './errors';
 import { settingsSchema, workflowPreferencesSchema, browserPreferencesSchema, lifecyclePreferencesSchema, idsSchema, type Persisted } from './schemas';
-import { LiveService, type NativeConfirmation, type LiveConnection } from './live-service';
+import { LiveService, type NativeConfirmation, type NativeStepConfirmation, type LiveConnection } from './live-service';
 import type { LiveConfirmation } from '../src/shared/live';
-import { isProtected } from '../src/shared/live';
 import { MailboxBrowser } from './mailbox';
 import { SessionVault, type SessionCipher } from './session-vault';
 import { LifecycleRunner, assertRunning } from './lifecycle-runner';
@@ -31,12 +30,12 @@ export class AppService {
   private updateLocked = false;
   private confirmAutomatic:()=>Promise<boolean>;
   private runnerWait?: (signal:AbortSignal)=>Promise<void>;
-  constructor(private store: LocalStore, profile: string, browserRoot: string, private publish: (state: AppState) => void, browser?: ReadOnlyConnection, confirm: NativeConfirmation = async () => false, options:{cipher?:SessionCipher;mailbox?:MailConnection;confirmAutomatic?:()=>Promise<boolean>;runnerWait?:(signal:AbortSignal)=>Promise<void>}={}) {
+  constructor(private store: LocalStore, profile: string, browserRoot: string, private publish: (state: AppState) => void, browser?: ReadOnlyConnection, confirm: NativeConfirmation = async () => false, options:{cipher?:SessionCipher;mailbox?:MailConnection;confirmStep?:NativeStepConfirmation;confirmAutomatic?:()=>Promise<boolean>;runnerWait?:(signal:AbortSignal)=>Promise<void>}={}) {
     this.confirmAutomatic=options.confirmAutomatic??(async()=>false);this.runnerWait=options.runnerWait;
     this.browser = browser ?? new ReadOnlyBrowser(profile, browserRoot, error => this.log(error), options.cipher?new SessionVault(profile,'odoo',options.cipher):undefined);
     this.profile = profile;
     this.mailbox = options.mailbox??new MailboxBrowser(profile+'-webmail',options.cipher?new SessionVault(profile+'-webmail','mail',options.cipher):undefined);
-    this.live = new LiveService(this.browser as ReadOnlyConnection & LiveConnection, () => this.state.liveHistory, liveHistory => this.saveLiveRecords(liveHistory), () => this.state.connection === 'connected' && this.state.discovery?.source === 'odoo' && !this.state.liveSafetyLock, confirm, {deletionAllowed:()=>this.state.settings.deleteAfterActivation,activationEmailDelayMinutes:()=>this.state.workflowPreferences.activationEmailDelayMinutes,automaticAllowed:()=>!this.state.lifecyclePreferences.safeMode&&!!this.workflowController&&!this.workflowController.signal.aborted,beforeMutation:()=>{if(this.workflowController)assertRunning(this.workflowController.signal);}});
+    this.live = new LiveService(this.browser as ReadOnlyConnection & LiveConnection, () => this.state.liveHistory, liveHistory => this.saveLiveRecords(liveHistory), () => this.state.connection === 'connected' && this.state.discovery?.source === 'odoo' && !this.state.liveSafetyLock, confirm, {deletionAllowed:()=>this.state.settings.deleteAfterActivation,confirmStep:review=>this.state.lifecyclePreferences.safeMode?(options.confirmStep?.(review)??Promise.resolve(false)):Promise.resolve(true),activationEmailDelayMinutes:()=>this.state.workflowPreferences.activationEmailDelayMinutes,automaticAllowed:()=>!this.state.lifecyclePreferences.safeMode&&!!this.workflowController&&!this.workflowController.signal.aborted,beforeMutation:()=>{if(this.workflowController)assertRunning(this.workflowController.signal);}});
   }
   private profile: string;
   async initialize() {
@@ -119,7 +118,7 @@ export class AppService {
       if(run&&run!==startingProgress&&run.progress&&run.progress.status!=='uncertain'){
         const record=this.state.liveHistory.find(value=>value.id===run.recordId);
         if(!record||!['deleted','copy-retained','copy-removed'].includes(record.phase)){
-          const status=safe.code==='LIFECYCLE_STOPPED'?'stopped':safe.code.includes('UNKNOWN')?'uncertain':'failed';
+          const status=['LIFECYCLE_STOPPED','LIVE_CONFIRMATION_CANCELLED'].includes(safe.code)?'stopped':safe.code.includes('UNKNOWN')?'uncertain':'failed';
           if(record){try{await this.live.reportProgress(record.id,record.progress?.step??run.progress.step,status,safe.message);}catch{/* Preserve the original failure if storage is unavailable. */}}
           else{const progress=makeProgress('database','copy',run.progress.step,status,safe.message);this.state.lifecycleRun={...run,stage:progress.message,progress,active:false};}
         }
@@ -252,7 +251,6 @@ export class AppService {
       if (!parsed.success || !this.state.discovery) throw new AppError('INVALID_SELECTION', 'Choose one or more databases from the current list.');
       const databases = [...new Set(parsed.data)].map(id => this.state.discovery!.databases.find(d => d.id === id));
       if (databases.some(d => !d)) throw new AppError('INVALID_SELECTION', 'One selected database is no longer present. Refresh your selection.');
-      if (databases.some(d => isProtected(d!.name))) throw new AppError('PROTECTED_DATABASE', 'The accounting database is excluded at your request.');
       const reports: Simulation[] = [];
       for (const db of databases) reports.push(simulate(db!, this.state.discovery, 'manual', this.state.connection === 'connected', new Date(), reports.map(r => r.proposedName), this.state.workflowPreferences.copyNameTemplate));
       await this.persist({ history: [...reports, ...this.state.history] });
@@ -326,6 +324,11 @@ export class AppService {
     this.live.cancel();
     if(this.state.lifecyclePreferences.safeMode&&!parsed.data.safeMode&&!await this.confirmAutomatic())return;
     await this.persist({lifecyclePreferences:parsed.data});
+  });}
+  async saveLiveActionPreferences(input:{deleteOriginal:boolean}){return this.exclusive(async()=>{
+    if(!input||typeof input.deleteOriginal!=='boolean'||Object.keys(input).some(key=>key!=='deleteOriginal'))throw new AppError('INVALID_SETTINGS','Choose whether to delete the original database.');
+    this.live.cancel();
+    await this.persist({settings:{...this.state.settings,deleteAfterActivation:input.deleteOriginal}});
   });}
   private async workflow<T>(action:(signal:AbortSignal)=>Promise<T>){
     const controller=new AbortController();this.workflowController=controller;

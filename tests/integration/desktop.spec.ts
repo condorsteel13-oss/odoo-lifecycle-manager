@@ -97,7 +97,7 @@ test('Safe mode opt-out and scheduled scope persist without starting any live wo
  await desktop.evaluate(({dialog})=>{dialog.showMessageBox=async()=>({response:1,checkboxChecked:false});});await safe.click();await expect(safe).not.toBeChecked();
  expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toEqual([]);
  await page.getByRole('button',{name:'Automation',exact:true}).click();const rule=page.getByRole('checkbox',{name:'Run lifecycle automatically',exact:true});await expect(rule).not.toBeChecked();
- await rule.check();await page.getByLabel('Database scope').selectOption('selected');await expect(page.getByRole('checkbox',{name:'example-accounting-0805',exact:true})).toHaveCount(0);
+ await rule.check();await page.getByLabel('Database scope').selectOption('selected');await expect(page.getByRole('checkbox',{name:'example-accounting-0805',exact:true})).toHaveCount(1);
  await page.getByRole('checkbox',{name:'atlas-staging',exact:true}).check();await page.getByLabel('Expiration threshold').fill('2');await page.getByRole('button',{name:'Save monitoring rule',exact:true}).click();
  await expect(page.getByRole('button',{name:'Run lifecycle rule now',exact:true})).toBeEnabled();
  const configured=await page.evaluate(()=>window.lifecycle.state());expect(configured.settings).toMatchObject({lifecycleEnabled:true,monitoringEnabled:false,scope:'selected',thresholdDays:2,databaseIds:[discovery.databases[0].id]});expect(configured.nextCheckAt).not.toBeNull();expect(configured.liveHistory).toEqual([]);
@@ -144,6 +144,24 @@ test('parent deletion defaults off and the Automation choice persists independen
  await desktop.close();desktop=await launch();page=await desktop.firstWindow();
  await page.getByRole('button',{name:'Automation',exact:true}).click();await expect(page.getByRole('checkbox',{name:'Delete original after successful activation',exact:true})).not.toBeChecked();
  const state=await page.evaluate(()=>window.lifecycle.state());expect(state.settings.lifecycleEnabled).toBe(false);expect(state.lifecyclePreferences.safeMode).toBe(true);expect(state.liveHistory).toEqual([]);
+});
+
+test('Settings and Live actions share the deletion choice without enabling rules or starting actions',async()=>{
+ directory=await mkdtemp(join(tmpdir(),'odoo-live-action-settings-'));
+ const launch=()=>electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
+ desktop=await launch();let page=await desktop.firstWindow();
+ await page.getByRole('button',{name:'Settings',exact:true}).click();
+ const deletion=page.getByRole('checkbox',{name:'Delete original database after successful activation',exact:true});
+ await expect(deletion).not.toBeChecked();await deletion.check();await expect(deletion).toBeChecked();
+ await page.getByRole('button',{name:'Live actions',exact:true}).click();await expect(deletion).toBeChecked();
+ const configured=await page.evaluate(()=>window.lifecycle.state());
+ expect(configured.settings).toMatchObject({deleteAfterActivation:true,monitoringEnabled:false,lifecycleEnabled:false});expect(configured.lifecyclePreferences.safeMode).toBe(true);expect(configured.liveHistory).toEqual([]);
+ await desktop.close();desktop=await launch();page=await desktop.firstWindow();
+ await page.getByRole('button',{name:'Live actions',exact:true}).click();
+ await expect(page.getByRole('checkbox',{name:'Delete original database after successful activation',exact:true})).toBeChecked();
+ await page.getByRole('checkbox',{name:'Delete original database after successful activation',exact:true}).uncheck();
+ await page.getByRole('button',{name:'Automation',exact:true}).click();await expect(page.getByRole('checkbox',{name:'Delete original after successful activation',exact:true})).not.toBeChecked();
+ const retained=await page.evaluate(()=>window.lifecycle.state());expect(retained.settings.deleteAfterActivation).toBe(false);expect(retained.liveHistory).toEqual([]);
 });
 
 test('update preferences persist and development builds cannot download or install',async()=>{

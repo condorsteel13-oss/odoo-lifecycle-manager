@@ -1,5 +1,5 @@
 import type { Database, ScheduledCycle, Settings } from '../shared/types';
-import { isProtected, type LiveRecord } from '../shared/live';
+import { type LiveRecord } from '../shared/live';
 import { daysRemaining } from './dates';
 const DAY=86400000;
 // Approximate countdown boundaries are used only to suppress repeat work, never
@@ -11,7 +11,7 @@ function boundary(db:Database){
 }
 export function matchesLifecycleRule(db:Database,settings:Settings,now=new Date()){
   const observed=Date.parse(db.expirationObservedAt??db.observedAt),days=daysRemaining(db.expiresAt,now)??db.remainingDays??null;
-  return db.source==='odoo'&&!!db.uuid&&!isProtected(db.name)&&!isProtected(db.id)&&Number.isFinite(observed)&&now.getTime()-observed<10*60000&&observed<=now.getTime()+60000&&days!==null&&days>=0&&days<=settings.thresholdDays&&!['expired','suspended'].includes(db.status)&&(settings.scope==='all'||settings.databaseIds.includes(db.id));
+  return db.source==='odoo'&&!!db.uuid&&Number.isFinite(observed)&&now.getTime()-observed<10*60000&&observed<=now.getTime()+60000&&days!==null&&days>=0&&days<=settings.thresholdDays&&!['expired','suspended'].includes(db.status)&&(settings.scope==='all'||settings.databaseIds.includes(db.id));
 }
 export function scheduledCandidates(databases:Database[],settings:Settings,jobs:ScheduledCycle[],records:LiveRecord[],now=new Date()){
   return databases.filter(db=>{

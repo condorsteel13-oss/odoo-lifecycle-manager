@@ -5,7 +5,7 @@ import type { Database } from '../src/shared/types';
 import type { LiveConfirmation, LiveRecord, LiveReview } from '../src/shared/live';
 import { daysRemaining } from '../src/domain/dates';
 import { AppError } from './errors';
-import { assertCopyName, assertUnprotected, identityFingerprint, type LiveInspection } from './live-contract';
+import { assertCopyName, identityFingerprint, type LiveInspection } from './live-contract';
 import type { ListedDatabase } from './metadata';
 import { sameEmail, activationURL, type ActivationInfo } from './activation';
 
@@ -21,6 +21,11 @@ export interface LiveConnection {
   resumeActivation(target: LiveInspection, email: string): Promise<void>;
 }
 export type NativeConfirmation = (review: LiveReview) => Promise<boolean>;
+export interface ActivationStepReview {
+  action: 'send-activation' | 'activate' | 'resume-activation';
+  originalName: string; copyName: string; email: string;
+}
+export type NativeStepConfirmation = (review: ActivationStepReview) => Promise<boolean>;
 const confirmation = z.object({ ticket: z.string().uuid(), typedName: z.string().max(101), acknowledged: z.literal(true), backupConfirmed: z.boolean().optional(), backupReference: z.string().trim().max(1000).optional(), integrityConfirmed: z.boolean().optional(), integrityNotes: z.string().trim().max(2000).optional(), subscriptionReviewed: z.boolean().optional() }).strict();
 function fail(message: string): never { throw new AppError('LIVE_BLOCKED', message); }
 const TTL = 5 * 60000;
@@ -29,14 +34,23 @@ type Ticket = { review: LiveReview; fingerprint: string; uuid: string; copyUuid:
 export class LiveService {
   private ticket: Ticket | null = null;
   private storageFault = false;
-  constructor(private browser: LiveConnection, private records: () => LiveRecord[], private save: (records: LiveRecord[]) => Promise<void>, private ready: () => boolean, private confirm: NativeConfirmation, private execution:{deletionAllowed?:()=>boolean;activationEmailDelayMinutes?:()=>number;automaticAllowed?:()=>boolean;beforeMutation?:()=>void}={}) {}
+  constructor(private browser: LiveConnection, private records: () => LiveRecord[], private save: (records: LiveRecord[]) => Promise<void>, private ready: () => boolean, private confirm: NativeConfirmation, private execution:{deletionAllowed?:()=>boolean;confirmStep?:NativeStepConfirmation;activationEmailDelayMinutes?:()=>number;automaticAllowed?:()=>boolean;beforeMutation?:()=>void}={}) {}
+  private async approveStep(action:ActivationStepReview['action'],record:LiveRecord,email:string) {
+    this.execution.beforeMutation?.();
+    if(!await this.execution.confirmStep?.({action,originalName:record.original.name,copyName:record.copyName,email})){
+      await this.reportProgress(record.id,action==='send-activation'?'waiting-email':'activating','stopped','Confirmation cancelled before submission. No new database action was sent.');
+      throw new AppError('LIVE_CONFIRMATION_CANCELLED','Step cancelled. The original is retained. Use Continue lifecycle when ready; no request was submitted for this step.');
+    }
+    this.execution.beforeMutation?.();
+    this.assertReady();
+  }
   async reportProgress(id:string,step:ProgressStep,status:ProgressStatus,detail?:string) {
     const record=this.record(id),next=withProgress(record,step,status,detail);
     if(next!==record)await this.put(next);
   }
   canDeleteOriginal(id:string) {
-    const record=this.record(id);
-    return record.deleteOriginal!==false&&(!record.workflow||this.execution.deletionAllowed?.()===true);
+    this.record(id);
+    return this.execution.deletionAllowed?.()===true;
   }
   cancel() { this.ticket = null; }
   pendingReview(){return this.ticket?structuredClone(this.ticket.review):null;}
@@ -45,10 +59,9 @@ export class LiveService {
     try { await this.save([record, ...this.records().filter(r => r.id !== record.id)]); }
     catch { this.storageFault = true; fail('The action log could not be saved. Live actions are locked. An in-flight action may have completed; verify in Odoo before doing anything else.'); }
   }
-  private record(id: string) { const r = this.records().find(r => r.id === id); if (!r) return fail('Select an action from the live action log.'); assertUnprotected(r.original.name); assertUnprotected(r.original.id); return r; }
+  private record(id: string) { const r = this.records().find(r => r.id === id); if (!r) return fail('Select an action from the live action log.'); return r; }
   private async target(id: string, uuid?: string) {
-    assertUnprotected(id); const target = await this.browser.inspectLive(id); assertUnprotected(target.database.name);
-    if (target.database.source !== 'odoo' || (uuid && uuid !== target.uuid)) fail('The database identity changed. No live action is permitted.');
+    const target = await this.browser.inspectLive(id); if (target.database.source !== 'odoo' || (uuid && uuid !== target.uuid)) fail('The database identity changed. No live action is permitted.');
     return target;
   }
   private async absent(name: string) {
@@ -100,7 +113,7 @@ export class LiveService {
   async prepareDuplicate(databaseId: string, copyName: string, workflow?:LiveRecord['workflow'], binding?:{uuid:string;scheduledId:string}) {
     this.cancel(); this.assertReady();
     z.string().max(200).parse(databaseId); z.string().max(50).parse(copyName);
-    assertUnprotected(databaseId); assertCopyName(copyName, databaseId.replace('https://', '').replace('.odoo.com', ''));
+    assertCopyName(copyName, databaseId.replace('https://', '').replace('.odoo.com', ''));
     const target = await this.target(databaseId,binding?.uuid); assertCopyName(copyName, target.database.name);
     if (target.database.duplication === 'unavailable' || ['expired', 'suspended'].includes(target.database.status)) fail('Odoo currently reports that this database cannot be duplicated.');
     await this.availableCycle(target.uuid, copyName);
@@ -116,7 +129,7 @@ export class LiveService {
     if(!['duplicate-submitting','duplicate-unknown','awaiting-copy','activation-pending','awaiting-expiry','copy-verified'].includes(record.phase))fail('This cycle cannot be continued. Check its recorded outcome.');
     if(workflow==='automatic'&&!this.execution.automaticAllowed?.())fail('Safe mode is enabled. Automatic execution is unavailable.');
     await this.target(record.original.id,record.originalUuid);
-    await this.put({...record,workflow,deleteOriginal:record.deleteOriginal!==false&&this.execution.deletionAllowed?.()===true,workflowStartedAt:new Date().toISOString(),...(scheduledId?{scheduledId}:{})});
+    await this.put({...record,workflow,deleteOriginal:this.execution.deletionAllowed?.()===true,workflowStartedAt:new Date().toISOString(),...(scheduledId?{scheduledId}:{})});
   }
   private async copyIdentity(record: LiveRecord): Promise<LiveInspection> {
     const copy = await this.target(`https://${record.copyName}.odoo.com`, record.copyUuid ?? undefined);
@@ -188,6 +201,7 @@ export class LiveService {
     r=withProgress(r,r.activation?.link==='not-started'?'waiting-email':'activating',r.activation?.link==='not-started'?'waiting':'running');
     await this.put(r);
     if (!sameEmail(info.recipientEmail,info.userEmail) && r.activation!.send === 'not-needed') {
+      await this.approveStep('send-activation',r,info.userEmail);
       r={...r,activation:{...r.activation!,send:'sending',sentAt:new Date().toISOString()}};
       await this.put(r); // Durable intent prevents duplicate sends across restarts.
       try { this.execution.beforeMutation?.(); await this.browser.sendActivation(copy,info.userEmail); }
@@ -206,6 +220,7 @@ export class LiveService {
     const copy=await this.copyIdentity(r), info=await this.browser.activation(copy);
     if(r.activation.completion==='pending'){
       if(!sameEmail(info.userEmail,r.activation.userEmail))fail('The signed-in user changed. No activation handoff was opened.');
+      await this.approveStep('resume-activation',r,info.userEmail);
       r=withProgress(r,'activating','running');await this.put(r);
       try{this.execution.beforeMutation?.();await this.browser.resumeActivation(copy,info.userEmail);}
       catch(error){await this.put(withProgress({...r,message:'The activation handoff is incomplete. No activation request was replayed; deletion remains blocked.'},'activating','uncertain','The activation handoff is incomplete. Use Complete activation to reconcile it.'));throw error;}
@@ -222,6 +237,7 @@ export class LiveService {
     const link=await readLink(structuredClone(r));
     activationURL(link,r.copyName,info.userEmail); // Reject unsupported formats before recording intent.
     r=withProgress(r,'email-received','done');await this.put(r);
+    await this.approveStep('activate',r,info.userEmail);
     const intent=withProgress({...r,activation:{...r.activation!,link:'opening' as const,completion:'pending' as const},updatedAt:new Date().toISOString()},'activating','running');
     await this.put(intent);
     try{this.execution.beforeMutation?.();await this.browser.activateFromEmail(copy,link);}
@@ -237,7 +253,7 @@ export class LiveService {
     const original = await this.target(r.original.id, r.originalUuid);
     if (original.database.deletion === 'unavailable') fail('Odoo reports that the deletion control is unavailable.');
     const copy = await this.checkedCopy(r);
-    const refreshed = { ...r, original: original.database, copy: copy.database, verifiedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    const refreshed = { ...r, deleteOriginal:true, original: original.database, copy: copy.database, verifiedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     await this.put(refreshed);
     return this.issue('delete', original, r.copyName, refreshed);
   }

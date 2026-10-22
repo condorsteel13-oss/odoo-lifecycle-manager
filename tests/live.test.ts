@@ -3,7 +3,7 @@ import { LiveService, type LiveConnection } from '../electron/live-service';
 import { identityFingerprint, parseLiveInspection, type LiveInspection } from '../electron/live-contract';
 import type { LiveRecord } from '../src/shared/live';
 import type { Database } from '../src/shared/types';
-const PROTECTED_DATABASE = 'example-accounting-0805';
+const ACCOUNTING_DATABASE = 'example-accounting-0805';
 const uuid='11111111-1111-4111-8111-111111111111', copyUuid='22222222-2222-4222-8222-222222222222';
 function target(name='fixture',id=uuid,parentUuid:string|null=null):LiveInspection {
  const database:Database={id:`https://${name}.odoo.com`,name,url:`https://${name}.odoo.com`,version:'19.0',createdAt:null,expiresAt:null,remainingDays:31,expirationObservedAt:new Date().toISOString(),expirationEvidence:'Trial banner',status:'trial',designation:'testing',subscription:'none',duplication:'available',deletion:'available',restrictions:[],observedAt:new Date().toISOString(),source:'odoo'};
@@ -13,11 +13,11 @@ function setup(emailDelayMinutes=0){
  let records:LiveRecord[]=[];let original=target(),copy=target('fixture-copy',copyUuid,uuid);let hasCopy=false;
  const writes:string[]=[];
  const browser:LiveConnection={activation:vi.fn(async()=>({pending:false,activated:true,userEmail:'user@example.com',recipientEmail:'user@example.com'})),sendActivation:vi.fn(async()=>{}),resumeActivation:vi.fn(async()=>{}),activateFromEmail:vi.fn(async()=>{}),checkCopyName:vi.fn(async()=>{}),liveList:vi.fn(async()=>[{database:original.database,uuid,parentUuid:null},...(hasCopy?[{database:copy.database,uuid:copyUuid,parentUuid:uuid}]:[])]),inspectLive:vi.fn(async id=>structuredClone(id===original.database.id?original:copy)),duplicateLive:vi.fn(async()=>{writes.push('duplicate');hasCopy=true;}),deleteLive:vi.fn(async()=>{writes.push('delete');vi.mocked(browser.liveList).mockResolvedValue([{database:copy.database,uuid:copyUuid,parentUuid:uuid}]);})};
- const save=vi.fn(async(next:LiveRecord[])=>{writes.push(next[0].phase);records=structuredClone(next);});const confirm=vi.fn(async()=>true);
- const service=new LiveService(browser,()=>records,save,()=>true,confirm,{activationEmailDelayMinutes:()=>emailDelayMinutes});
+ const save=vi.fn(async(next:LiveRecord[])=>{writes.push(next[0].phase);records=structuredClone(next);});const confirm=vi.fn(async()=>true),confirmStep=vi.fn(async()=>true);
+ const service=new LiveService(browser,()=>records,save,()=>true,confirm,{deletionAllowed:()=>true,confirmStep,activationEmailDelayMinutes:()=>emailDelayMinutes});
  const duplicate=async()=>{const review=await service.prepareDuplicate(original.database.id,'fixture-copy');await service.commit({ticket:review.ticket,typedName:'fixture',acknowledged:true});};
  const deletion=async()=>{const review=await service.prepareDelete(records[0].id);return {ticket:review.ticket,typedName:'fixture',acknowledged:true,backupConfirmed:true,backupReference:'Offline backup checked today',integrityConfirmed:true,integrityNotes:'Opened orders and attachments; totals checked.',subscriptionReviewed:true};};
- return {service,browser,save,confirm,writes,duplicate,deletion,records:()=>records,original,copy,setCopy:(value:LiveInspection)=>{copy=value;},setOriginal:(value:LiveInspection)=>{original=value;}};
+ return {service,browser,save,confirm,confirmStep,writes,duplicate,deletion,records:()=>records,original,copy,setCopy:(value:LiveInspection)=>{copy=value;},setOriginal:(value:LiveInspection)=>{original=value;}};
 }
 afterEach(()=>vi.useRealTimers());
 describe('keeping both databases after a verified copy',()=>{
@@ -31,7 +31,7 @@ describe('keeping both databases after a verified copy',()=>{
   await expect(f.service.authorizeWorkflow(old.id,'guided')).rejects.toThrow();
   await expect(f.service.verifyCopy(old.id)).rejects.toThrow();
   await expect(f.service.startActivation(old.id)).rejects.toThrow();
-  const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm);
+  const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm,{deletionAllowed:()=>true,confirmStep:f.confirmStep});
   await expect(restarted.prepareDuplicate(f.original.database.id,'fixture-copy')).rejects.toThrow(/already exists/);
   const review=await restarted.prepareDuplicate(f.original.database.id,'fixture-new-copy');
   expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);
@@ -74,11 +74,11 @@ describe('manual live lifecycle safety boundary',()=>{
   await expect(f.service.commit(input)).rejects.toThrow();expect(f.confirm).not.toHaveBeenCalled();expect(f.browser.duplicateLive).not.toHaveBeenCalled();
  });
  it('requires a real connected workspace',async()=>{const f=setup();const offline=new LiveService(f.browser,f.records,f.save,()=>false,f.confirm);await expect(offline.prepareDuplicate(f.original.database.id,'fixture-copy')).rejects.toThrow(/connected/);expect(f.browser.inspectLive).not.toHaveBeenCalled();});
- it('rejects accounting before network access',async()=>{const f=setup();await expect(f.service.prepareDuplicate(`https://${PROTECTED_DATABASE}.odoo.com`,'fixture-copy')).rejects.toThrow(/accounting/);expect(f.browser.inspectLive).not.toHaveBeenCalled();expect(f.browser.liveList).not.toHaveBeenCalled();});
- it.each(['fixture','BAD COPY','abc','a'.repeat(51),'edu-copy',PROTECTED_DATABASE])('rejects invalid or protected copy name %s',async name=>{const f=setup();await expect(f.service.prepareDuplicate(f.original.database.id,name)).rejects.toThrow();expect(f.browser.duplicateLive).not.toHaveBeenCalled();});
+ it('allows accounting databases through the same live preflight',async()=>{const f=setup();f.setOriginal(target(ACCOUNTING_DATABASE));const review=await f.service.prepareDuplicate(`https://${ACCOUNTING_DATABASE}.odoo.com`,'fixture-copy');expect(review.original.name).toBe(ACCOUNTING_DATABASE);expect(f.browser.duplicateLive).not.toHaveBeenCalled();});
+ it.each(['fixture','BAD COPY','abc','a'.repeat(51),'edu-copy'])('rejects invalid copy name %s',async name=>{const f=setup();await expect(f.service.prepareDuplicate(f.original.database.id,name)).rejects.toThrow();expect(f.browser.duplicateLive).not.toHaveBeenCalled();});
  it('blocks stale identities and changed subscriptions',async()=>{const f=setup();const review=await f.service.prepareDuplicate(f.original.database.id,'fixture-copy');f.setOriginal({...f.original,subId:33,isPaid:true,plan:'Custom'});await expect(f.service.commit({ticket:review.ticket,typedName:'fixture',acknowledged:true})).rejects.toThrow(/changed/);expect(f.confirm).not.toHaveBeenCalled();});
  it('prevents collision after review',async()=>{const f=setup();const review=await f.service.prepareDuplicate(f.original.database.id,'fixture-copy');vi.mocked(f.browser.liveList).mockResolvedValue([{database:f.copy.database,uuid:copyUuid,parentUuid:uuid}]);await expect(f.service.commit({ticket:review.ticket,typedName:'fixture',acknowledged:true})).rejects.toThrow(/already appears/);expect(f.browser.duplicateLive).not.toHaveBeenCalled();});
- it('never retries an uncertain duplicate, including after restart',async()=>{const f=setup();vi.mocked(f.browser.duplicateLive).mockRejectedValue(new Error('secret network diagnostic'));await expect(f.duplicate()).rejects.toThrow(/uncertain/);expect(f.records()[0].phase).toBe('duplicate-unknown');const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm);await expect(restarted.prepareDuplicate(f.original.database.id,'fixture-new')).rejects.toThrow(/already exists/);expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(JSON.stringify(f.records())).not.toContain('secret');});
+ it('never retries an uncertain duplicate, including after restart',async()=>{const f=setup();vi.mocked(f.browser.duplicateLive).mockRejectedValue(new Error('secret network diagnostic'));await expect(f.duplicate()).rejects.toThrow(/uncertain/);expect(f.records()[0].phase).toBe('duplicate-unknown');const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm,{deletionAllowed:()=>true,confirmStep:f.confirmStep});await expect(restarted.prepareDuplicate(f.original.database.id,'fixture-new')).rejects.toThrow(/already exists/);expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(JSON.stringify(f.records())).not.toContain('secret');});
  it('blocks mutations when intent cannot be saved',async()=>{const f=setup();f.save.mockRejectedValue(new Error('disk full'));await expect(f.duplicate()).rejects.toThrow(/locked/);expect(f.browser.duplicateLive).not.toHaveBeenCalled();await expect(f.service.prepareDuplicate(f.original.database.id,'fixture-new')).rejects.toThrow(/intact/);});
  it.each(['identity','parent','neutralization','expiry','access'])('blocks deletion when copy %s verification fails',async kind=>{const f=setup();await f.duplicate();if(kind==='identity')f.setCopy({...f.copy,uuid});if(kind==='parent')f.setCopy({...f.copy,parentUuid:null});if(kind==='neutralization')f.setCopy({...f.copy,neutralized:false});if(kind==='expiry')f.setCopy({...f.copy,database:{...f.copy.database,remainingDays:null,expiresAt:null}});if(kind==='access')vi.mocked(f.browser.inspectLive).mockRejectedValue(new Error('access denied'));await expect(f.service.verifyCopy(f.records()[0].id)).rejects.toThrow();await expect(f.service.prepareDelete(f.records()[0].id)).rejects.toThrow(/Verify the copy/);expect(f.browser.deleteLive).not.toHaveBeenCalled();});
  it.each(['backupConfirmed','backupReference','integrityConfirmed','integrityNotes','subscriptionReviewed'])('requires deletion attestation %s in the main process',async key=>{const f=setup();await f.duplicate();await f.service.verifyCopy(f.records()[0].id);const input:any=await f.deletion();delete input[key];await expect(f.service.commit(input)).rejects.toThrow(/Confirm a recoverable/);expect(f.browser.deleteLive).not.toHaveBeenCalled();expect(f.confirm).toHaveBeenCalledTimes(1);});
@@ -128,7 +128,7 @@ describe('activation lifecycle safeguards',()=>{
   expect(f.browser.resumeActivation).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).not.toHaveBeenCalled();
  });
  const pending={pending:true,activated:false,userEmail:'current@example.com',recipientEmail:'previous@example.com'};
- it('sends once to the current user when the recipient differs, including across restarts',async()=>{const f=setup();await f.duplicate();vi.mocked(f.browser.activation).mockResolvedValue(pending);const id=f.records()[0].id;await f.service.startActivation(id);expect(f.browser.sendActivation).toHaveBeenCalledWith(expect.anything(),'current@example.com');expect(f.records()[0].activation?.send).toBe('sent');expect(f.records()[0].phase).toBe('activation-pending');const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm);await restarted.startActivation(id);expect(f.browser.sendActivation).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).not.toHaveBeenCalled();});
+ it('sends once to the current user when the recipient differs, including across restarts',async()=>{const f=setup();await f.duplicate();vi.mocked(f.browser.activation).mockResolvedValue(pending);const id=f.records()[0].id;await f.service.startActivation(id);expect(f.browser.sendActivation).toHaveBeenCalledWith(expect.anything(),'current@example.com');expect(f.records()[0].activation?.send).toBe('sent');expect(f.records()[0].phase).toBe('activation-pending');const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm,{deletionAllowed:()=>true,confirmStep:f.confirmStep});await restarted.startActivation(id);expect(f.browser.sendActivation).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).not.toHaveBeenCalled();});
  it('does not resend when Odoo already reports the logged-in user as recipient',async()=>{const f=setup();await f.duplicate();vi.mocked(f.browser.activation).mockResolvedValue({...pending,recipientEmail:'CURRENT@example.com'});await f.service.startActivation(f.records()[0].id);expect(f.browser.sendActivation).not.toHaveBeenCalled();});
  it('records uncertain email send and never retries',async()=>{const f=setup();await f.duplicate();vi.mocked(f.browser.activation).mockResolvedValue(pending);vi.mocked(f.browser.sendActivation).mockRejectedValue(new Error('timeout'));await expect(f.service.startActivation(f.records()[0].id)).rejects.toThrow(/not confirmed/);await f.service.startActivation(f.records()[0].id);expect(f.browser.sendActivation).toHaveBeenCalledTimes(1);expect(f.records()[0].activation?.send).toBe('unknown');});
  it('does not send when durable intent cannot be saved',async()=>{const f=setup();await f.duplicate();vi.mocked(f.browser.activation).mockResolvedValue(pending);f.save.mockRejectedValue(new Error('full'));await expect(f.service.startActivation(f.records()[0].id)).rejects.toThrow();expect(f.browser.sendActivation).not.toHaveBeenCalled();});
@@ -150,7 +150,7 @@ describe('user-reported removal and a fresh cycle',()=>{
   await f.service.closeRemovedCopy({recordId:before.id,removedByUser:true});
   expect(f.records()[0]).toMatchObject({...before,phase:'copy-removed',verifiedAt:null,updatedAt:expect.any(String),message:expect.stringContaining('not independent proof'),removal:{userReportedRemoved:true,previousPhase:'copy-verified',checkedAt:expect.any(String)}});
   expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).not.toHaveBeenCalled();expect(f.browser.sendActivation).not.toHaveBeenCalled();
-  const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm);
+  const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm,{deletionAllowed:()=>true,confirmStep:f.confirmStep});
   await expect(restarted.prepareDuplicate(f.original.database.id,'fixture-copy')).rejects.toThrow(/historical names/);
   const review=await restarted.prepareDuplicate(f.original.database.id,'fixture-copy-2');expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);
   await restarted.commit({ticket:review.ticket,typedName:'fixture',acknowledged:true});
@@ -180,15 +180,14 @@ describe('user-reported removal and a fresh cycle',()=>{
   const f=await knownCopy();absentCopy(f);f.save.mockRejectedValueOnce(new Error('disk full'));
   await expect(f.service.closeRemovedCopy({recordId:f.records()[0].id,removedByUser:true})).rejects.toThrow(/locked/);
   await expect(f.service.prepareDuplicate(f.original.database.id,'fixture-new')).rejects.toThrow(/intact/);
-  await f.save([{...f.records()[0],phase:'copy-removed'}]);const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm);
+  await f.save([{...f.records()[0],phase:'copy-removed'}]);const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm,{deletionAllowed:()=>true,confirmStep:f.confirmStep});
   await expect(restarted.prepareDuplicate(f.original.database.id,'fixture-new')).rejects.toThrow(/already exists/);
  });
 });
 
-it('protects accounting names and URLs for every account',async()=>{
- const {isProtected}=await import('../src/shared/live');
- for(const name of ['accounting','example-accounting-0805','ACCOUNTING-PROD','https://company-accounting.odoo.com'])expect(isProtected(name)).toBe(true);
- for(const name of ['fixture','accountingtools','https://fixture.odoo.com'])expect(isProtected(name)).toBe(false);
+it('accepts accounting copy names without relaxing name validation',async()=>{
+ const {validCopyName}=await import('../src/shared/live');
+ expect(validCopyName('example-accounting-0805-copy')).toBe(true);expect(validCopyName('INVALID COPY')).toBe(false);
 });
 
 describe('activation email delivery delay',()=>{
@@ -201,7 +200,7 @@ describe('activation email delivery delay',()=>{
   await expect(f.service.completeActivation(id,read)).rejects.toMatchObject({code:'ACTIVATION_EMAIL_WAITING'});
   vi.setSystemTime(Date.now()+179_999);
   // A later setting of zero cannot shorten this copy's saved delay.
-  const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm,{activationEmailDelayMinutes:()=>0});
+  const restarted=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm,{deletionAllowed:()=>true,confirmStep:f.confirmStep,activationEmailDelayMinutes:()=>0});
   await expect(restarted.completeActivation(id,read)).rejects.toMatchObject({code:'ACTIVATION_EMAIL_WAITING'});
   expect(read).not.toHaveBeenCalled();expect(f.browser.activateFromEmail).not.toHaveBeenCalled();
   vi.setSystemTime(Date.now()+1);
@@ -236,4 +235,19 @@ it('rechecks deletion policy after the native confirmation, before any deletion 
  const review=await live.prepareDelete(id);
  await expect(live.commit({ticket:review.ticket,typedName:'fixture',acknowledged:true,backupConfirmed:true,backupReference:'Offline backup',integrityConfirmed:true,integrityNotes:'Checked orders and files',subscriptionReviewed:true})).rejects.toThrow(/disabled/);
  expect(f.browser.deleteLive).not.toHaveBeenCalled();expect(f.records()[0].phase).toBe('copy-verified');
+});
+
+it('blocks direct deletion of a manually created copy when the saved deletion setting is off',async()=>{
+ const f=setup();await f.duplicate();await f.service.verifyCopy(f.records()[0].id);
+ const live=new LiveService(f.browser,f.records,f.save,()=>true,f.confirm,{deletionAllowed:()=>false});
+ await expect(live.prepareDelete(f.records()[0].id)).rejects.toThrow(/disabled/);expect(f.browser.deleteLive).not.toHaveBeenCalled();
+});
+
+it('asks before resuming activation and leaves its one-shot journal untouched on Cancel',async()=>{
+ const f=setup();await f.duplicate();const id=f.records()[0].id;
+ await f.save([{...f.records()[0],phase:'activation-pending',activation:{userEmail:'user@example.com',recipientEmail:'user@example.com',send:'not-needed',sentAt:null,link:'unknown',completion:'pending'}}]);
+ f.confirmStep.mockResolvedValueOnce(false);const read=vi.fn();
+ await expect(f.service.completeActivation(id,read)).rejects.toMatchObject({code:'LIVE_CONFIRMATION_CANCELLED'});
+ expect(f.confirmStep).toHaveBeenCalledWith({action:'resume-activation',originalName:'fixture',copyName:'fixture-copy',email:'user@example.com'});
+ expect(f.browser.resumeActivation).not.toHaveBeenCalled();expect(read).not.toHaveBeenCalled();expect(f.records()[0].activation).toMatchObject({link:'unknown',completion:'pending'});
 });

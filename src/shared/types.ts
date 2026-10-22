@@ -58,6 +58,7 @@ export interface AppState {
   dataDirectory: string; browserDirectory: string;
 }
 export interface AppAPI {
+  saveLiveActionPreferences(input:{deleteOriginal:boolean}):Promise<void>;
   saveWorkflowPreferences(input: WorkflowPreferences): Promise<void>;
   saveLifecyclePreferences(input:{safeMode:boolean}):Promise<void>;
   runLifecycle(databaseId:string,copyName:string):Promise<LiveReview|null>;

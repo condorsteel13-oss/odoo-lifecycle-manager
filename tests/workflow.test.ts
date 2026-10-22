@@ -26,7 +26,7 @@ describe('copy naming preferences',()=>{
       expect(used).not.toContain(value);used.push(value);
     }
   });
-  it.each(['copy','{name}-{name}','{name}-{time}','{name}-{date}-{date}','{name}/copy','{name} copy','{name}-COPY','{name}-accounting','{name}-'+'x'.repeat(41)])('rejects invalid template %s',copyNameTemplate=>{
+  it.each(['copy','{name}-{name}','{name}-{time}','{name}-{date}-{date}','{name}/copy','{name} copy','{name}-COPY','{name}-'+'x'.repeat(41)])('rejects invalid template %s',copyNameTemplate=>{
     expect(workflowPreferencesSchema.safeParse({...DEFAULT_WORKFLOW_PREFERENCES,copyNameTemplate}).success).toBe(false);
     expect(()=>proposeName('example-db',[],now,copyNameTemplate)).toThrow();
   });

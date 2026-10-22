@@ -203,7 +203,7 @@ const liveTarget=()=>({database:{id:'https://fixture.odoo.com',url:'https://fixt
 test('name availability check sends no mutation and accepts only a valid name',async()=>{
  const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});const reader=new MetadataReader(context);await reader.install();liveMode=true;
  await reader.checkCopyName('fixture-copy','fixture');expect(received).toEqual(['POST /odoo-enterprise/trial-check']);expect(liveBodies[0].params).toEqual({dbname:'fixture-copy'});
- await expect(reader.checkCopyName('example-accounting-0805','fixture')).rejects.toThrow();expect(received).toHaveLength(1);await context.close();
+ await reader.checkCopyName('example-accounting-0805','fixture');expect(received).toHaveLength(2);await context.close();
 });
 test('live duplication has one exact testing-only request and never follows its success URL',async()=>{
  const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});const diagnostics:unknown[]=[];const reader=new MetadataReader(context,undefined,event=>diagnostics.push({code:event.code,message:event.message}));await reader.install();reader.allowDatabases(['https://fixture.odoo.com']);liveMode=true;
@@ -227,10 +227,10 @@ test('mutation redirects fail closed without retrying or following the redirect'
  const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});const reader=new MetadataReader(context);await reader.install();reader.allowDatabases(['https://fixture.odoo.com']);liveMode=true;liveRedirect=true;
  await expect(reader.duplicateLive(liveTarget(),'fixture-copy')).rejects.toThrow(/not confirm/);expect(received).toEqual(['POST /saas_worker/dup/json']);await context.close();
 });
-test('untrusted pages and protected identities cannot use the live endpoints',async()=>{
+test('untrusted pages and mismatched identities cannot use the live endpoints',async()=>{
  const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});const reader=new MetadataReader(context);await reader.install();liveMode=true;
  const page=await context.newPage();await page.goto('https://fixture.odoo.com/saas_worker/drop/json').catch(()=>{});
- await expect(reader.duplicateLive({...liveTarget(),database:{...liveTarget().database,name:'example-accounting-0805'}},'fixture-copy')).rejects.toThrow(/accounting/);
+ await expect(reader.duplicateLive({...liveTarget(),database:{...liveTarget().database,name:'example-accounting-0805'}},'fixture-copy')).rejects.toThrow();
  expect(received).toEqual([]);await context.close();
 });
 
@@ -245,10 +245,10 @@ test('activation reads never send and already-matching recipients are not resent
  await reader.activation(liveTarget());await reader.sendActivation(liveTarget(),'current@example.com');
  expect(received).toEqual(['POST /saas_worker/trial_info','POST /saas_worker/trial_info']);expect(liveBodies).toEqual([]);await context.close();
 });
-test('activation cannot be redirected to a different email or accounting database',async()=>{
+test('activation cannot be redirected to a different email or a mismatched database identity',async()=>{
  const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});const reader=new MetadataReader(context);await reader.install();reader.allowDatabases(['https://fixture.odoo.com']);
  await expect(reader.sendActivation(liveTarget(),'arbitrary@example.com')).rejects.toThrow(/user changed/);
- await expect(reader.activation({...liveTarget(),database:{...liveTarget().database,name:'example-accounting-0805'}})).rejects.toThrow(/accounting/);
+ await expect(reader.activation({...liveTarget(),database:{...liveTarget().database,name:'example-accounting-0805'}})).rejects.toThrow();
  expect(received).toEqual(['POST /saas_worker/trial_info']);expect(liveBodies).toEqual([]);await context.close();
 });
 

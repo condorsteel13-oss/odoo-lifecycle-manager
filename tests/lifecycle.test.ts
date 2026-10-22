@@ -3,13 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppService, type ReadOnlyConnection, type MailConnection } from '../electron/service';
-import type { LiveConnection } from '../electron/live-service';
+import type { LiveConnection, ActivationStepReview } from '../electron/live-service';
 import type { LiveInspection } from '../electron/live-contract';
 import { LocalStore } from '../electron/store';
 import { AppError } from '../electron/errors';
 import { scheduledCandidates } from '../src/domain/lifecycle-schedule';
 import { DEFAULT_SETTINGS } from '../src/domain/demo';
-const PROTECTED_DATABASE = 'example-accounting-0805';
+const ACCOUNTING_DATABASE = 'example-accounting-0805';
 import type { LiveConfirmation, LiveRecord, LiveReview } from '../src/shared/live';
 const uuid='11111111-1111-4111-8111-111111111111',copyUuid='22222222-2222-4222-8222-222222222222';
 function target(name='fixture',id=uuid,parentUuid:string|null=null):LiveInspection{
@@ -25,13 +25,50 @@ async function setup(deleteAfterActivation=true){
  const discovery=()=>({source:'odoo' as const,databases:rows().map(row=>({...row.database,observedAt:new Date().toISOString(),expirationObservedAt:new Date().toISOString()})),refreshedAt:new Date().toISOString(),coverage:'visible-list' as const,pages:1,warnings:[]});
  const browser:ReadOnlyConnection&LiveConnection={connect:vi.fn(async()=>discovery()),refresh:vi.fn(async()=>discovery()),close:vi.fn(async()=>{}),checkCopyName:vi.fn(async()=>{}),liveList:vi.fn(async()=>rows()),inspectLive:vi.fn(async id=>{if(id===original.database.id&&!deleted)return structuredClone(original);if(id===copy.database.id&&created)return structuredClone(copy);throw new AppError('DATABASE_MISSING','Copy not ready');}),duplicateLive:vi.fn(async(_source,name)=>{copy=target(name,copyUuid,uuid);created=true;}),deleteLive:vi.fn(async()=>{deleted=true;}),activation:vi.fn(async()=>({pending:!activated,activated,userEmail:'current@example.com',recipientEmail:'old@example.com',expiresAt:new Date(Date.now()+2*86400000).toISOString()})),sendActivation:vi.fn(async()=>{}),resumeActivation:vi.fn(async()=>{}),activateFromEmail:vi.fn(async()=>{activated=true;})};
  const mail:MailConnection={connect:vi.fn(async()=>'current@example.com'),finishLogin:vi.fn(),check:vi.fn(async()=>'current@example.com'),close:vi.fn(async()=>{}),setHeadless:vi.fn(async()=>{}),findActivationLink:vi.fn(async t=>`https://www.odoo.com/odoo-enterprise/confirm-database/${t.copyName}/${'a'.repeat(40)}?email=current%40example.com&username=current%40example.com&country_id=38`)};
- const confirm=vi.fn(async()=>true),confirmAutomatic=vi.fn(async()=>true),wait=vi.fn(async(_signal:AbortSignal)=>{vi.setSystemTime(Date.now()+15_000);});
- const createService=()=>new AppService(store,join(dir,'profile'),'unused',()=>{},browser,confirm,{mailbox:mail,confirmAutomatic,runnerWait:wait});
+ const confirm=vi.fn(async(_review:LiveReview)=>true),confirmStep=vi.fn(async(_review:ActivationStepReview)=>true),confirmAutomatic=vi.fn(async()=>true),wait=vi.fn(async(_signal:AbortSignal)=>{vi.setSystemTime(Date.now()+15_000);});
+ const createService=()=>new AppService(store,join(dir,'profile'),'unused',()=>{},browser,confirm,{mailbox:mail,confirmStep,confirmAutomatic,runnerWait:wait});
  const service=createService();await service.initialize();await service.connect();await service.saveSettings({...service.getState().settings,deleteAfterActivation});
  cleanups.push(async()=>{await service.dispose();await rm(dir,{recursive:true,force:true});});
- return {service,store,browser,mail,confirm,confirmAutomatic,wait,createService,original:()=>original,copy:()=>copy,setOriginal:(x:LiveInspection)=>{original=x;},setCopy:(x:LiveInspection)=>{copy=x;},pendingActivation:()=>{activated=false;},setCreated:(value:boolean)=>{created=value;}};
+ return {service,store,browser,mail,confirm,confirmStep,confirmAutomatic,wait,createService,original:()=>original,copy:()=>copy,setOriginal:(x:LiveInspection)=>{original=x;},setCopy:(x:LiveInspection)=>{copy=x;},pendingActivation:()=>{activated=false;},setCreated:(value:boolean)=>{created=value;}};
 }
 function confirmation(review:LiveReview):LiveConfirmation{return {ticket:review.ticket,typedName:'fixture',acknowledged:true,...(review.action==='delete'?{backupConfirmed:true,backupReference:'Verified offline backup',integrityConfirmed:true,integrityNotes:'Checked orders and attachments',subscriptionReviewed:true}:{})};}
+describe('live step confirmations and deletion setting',()=>{
+ it.each([true,false])('Safe mode confirms each mutation with deletion %s',async deleting=>{
+  const f=await setup(deleting);f.pendingActivation();
+  const order:string[]=[];
+  f.confirm.mockImplementation(async review=>{order.push(review.action);return true;});
+  f.confirmStep.mockImplementation(async review=>{order.push(review.action);return true;});
+  const create=await f.service.runLifecycle(f.original().database.id,'fixture-copy');
+  const deletion=await f.service.confirmLive(confirmation(create!));
+  expect(order).toEqual(['duplicate','send-activation','activate']);
+  expect(f.browser.deleteLive).not.toHaveBeenCalled();
+  if(deleting){expect(deletion?.action).toBe('delete');await f.service.confirmLive(confirmation(deletion!));expect(order.at(-1)).toBe('delete');expect(f.browser.deleteLive).toHaveBeenCalledOnce();}
+  else{expect(deletion).toBeNull();expect(f.service.getState().liveHistory[0].phase).toBe('copy-retained');}
+ });
+ it.each([true,false])('Safe mode off follows deletion %s with no per-step dialogs',async deleting=>{
+  const f=await setup(deleting);f.pendingActivation();await f.service.saveLifecyclePreferences({safeMode:false});
+  await f.service.runLifecycle(f.original().database.id,'fixture-copy');
+  expect(f.confirm).not.toHaveBeenCalled();expect(f.confirmStep).not.toHaveBeenCalled();
+  expect(f.browser.activateFromEmail).toHaveBeenCalledOnce();expect(f.browser.deleteLive).toHaveBeenCalledTimes(deleting?1:0);
+ });
+ it.each(['send-activation','activate'])('cancelling %s stops before the request and never starts deletion',async action=>{
+  const f=await setup();f.pendingActivation();f.confirmStep.mockImplementation(async review=>review.action!==action);
+  const review=await f.service.runLifecycle(f.original().database.id,'fixture-copy');
+  await expect(f.service.confirmLive(confirmation(review!))).rejects.toMatchObject({code:'LIVE_CONFIRMATION_CANCELLED'});
+  expect(f.browser.sendActivation).toHaveBeenCalledTimes(action==='send-activation'?0:1);
+  expect(f.browser.activateFromEmail).not.toHaveBeenCalled();expect(f.browser.deleteLive).not.toHaveBeenCalled();
+  const record=f.service.getState().liveHistory[0];expect(record.activation?.send).toBe(action==='send-activation'?'not-needed':'sent');expect(record.activation?.link).toBe('not-started');
+  expect(record.progress?.status).toBe('stopped');
+ });
+ it('saves deletion preferences without resetting the rule schedule or starting live work',async()=>{
+  const f=await setup(false);await f.service.runMonitor();const before=f.service.getState();expect(before.lastAttemptAt).not.toBeNull();
+  await f.service.saveLiveActionPreferences({deleteOriginal:true});
+  expect(f.service.getState().settings).toEqual({...before.settings,deleteAfterActivation:true});
+  expect(f.service.getState().lastAttemptAt).toBe(before.lastAttemptAt);expect(f.browser.duplicateLive).not.toHaveBeenCalled();expect(f.browser.deleteLive).not.toHaveBeenCalled();
+  await expect(f.service.saveLiveActionPreferences({deleteOriginal:true,extra:true} as any)).rejects.toThrow(/Choose/);
+  await f.service.dispose();const restored=f.createService();await restored.initialize();expect(restored.getState().settings.deleteAfterActivation).toBe(true);await restored.dispose();
+ });
+});
 describe('Safe mode and automatic lifecycle',()=>{
  it('defaults to Safe mode and requires two independent native confirmations',async()=>{
   const f=await setup();expect(f.service.getState().lifecyclePreferences.safeMode).toBe(true);
@@ -93,8 +130,8 @@ describe('Safe mode and automatic lifecycle',()=>{
   f.wait.mockImplementation(async()=>{vi.setSystemTime(Date.now()+16*60000);});await f.service.saveLifecyclePreferences({safeMode:false});
   await expect(f.service.runLifecycle(f.original().database.id,'fixture-copy')).rejects.toThrow(/15 minutes/);expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).not.toHaveBeenCalled();expect(f.service.getState().liveHistory[0].phase).toBe('awaiting-expiry');
  });
- it('keeps accounting excluded in automatic mode',async()=>{
-  const f=await setup();await f.service.saveLifecyclePreferences({safeMode:false});await expect(f.service.runLifecycle(`https://${PROTECTED_DATABASE}.odoo.com`,'fixture-copy')).rejects.toThrow(/accounting/);expect(f.browser.inspectLive).not.toHaveBeenCalled();expect(f.browser.duplicateLive).not.toHaveBeenCalled();
+ it('includes accounting in automatic mode with the same verified deletion gates',async()=>{
+  const f=await setup();f.setOriginal(target(ACCOUNTING_DATABASE));await f.service.saveLifecyclePreferences({safeMode:false});await f.service.runLifecycle(`https://${ACCOUNTING_DATABASE}.odoo.com`,'fixture-copy');expect(f.browser.duplicateLive).toHaveBeenCalledOnce();expect(f.browser.deleteLive).toHaveBeenCalledOnce();
  });
 });
 describe('scheduled lifecycle rules',()=>{
@@ -137,10 +174,10 @@ describe('scheduled lifecycle rules',()=>{
   const {data}=await f.store.load();await f.store.save({...data,lifecycleQueue:data.lifecycleQueue.map(job=>({...job,status:'running'}))});
   const restored=f.createService();await restored.initialize();expect(restored.getState().lifecycleQueue[0].status).toBe('attention');expect(f.browser.duplicateLive).not.toHaveBeenCalled();await restored.dispose();
  });
- it('excludes accounting, stale readings and prior copy expiries; accepts a later expiry event',()=>{
+ it('includes accounting but excludes stale readings and prior copy expiries; accepts a later expiry event',()=>{
   const db=target().database,settings={...DEFAULT_SETTINGS,lifecycleEnabled:true,thresholdDays:40};
-  const protectedDb=target(PROTECTED_DATABASE).database,stale={...db,expirationObservedAt:new Date(Date.now()-3600000).toISOString()};
-  expect(scheduledCandidates([protectedDb,stale],settings,[],[])).toHaveLength(0);
+  const accountingDb=target(ACCOUNTING_DATABASE).database,stale={...db,expirationObservedAt:new Date(Date.now()-3600000).toISOString()};
+  expect(scheduledCandidates([accountingDb,stale],settings,[],[])).toEqual([accountingDb]);
   const copy=target('fixture-copy',copyUuid,uuid).database;
   const record={original:db,copy,copyName:copy.name,copyUuid} as LiveRecord;
   expect(scheduledCandidates([copy],settings,[],[record])).toHaveLength(0);
@@ -208,22 +245,22 @@ describe('optional parent deletion and lifecycle progress',()=>{
   const record=f.service.getState().liveHistory[0];expect(record.phase).toBe('copy-retained');
   await f.service.saveSettings({...f.service.getState().settings,deleteAfterActivation:true});
   await expect(f.service.continueLifecycle(record.id)).rejects.toThrow(/cannot be continued/);
-  await expect(f.service.prepareDelete(record.id)).rejects.toThrow(/disabled/);expect(f.browser.deleteLive).not.toHaveBeenCalled();
+  await expect(f.service.prepareDelete(record.id)).rejects.toThrow(/Verify/);expect(f.browser.deleteLive).not.toHaveBeenCalled();
  });
- it('keeps copy-only policy across interruption, restart and an enabled deletion setting',async()=>{
+ it('uses the current deletion setting when explicitly continuing an interrupted cycle',async()=>{
   const f=await setup(false);f.pendingActivation();await f.service.saveLifecyclePreferences({safeMode:false});
   f.wait.mockImplementationOnce(async()=>{await f.service.stopLifecycle();});
   await expect(f.service.runLifecycle(f.original().database.id,'fixture-copy')).rejects.toThrow(/stopped/);
   const id=f.service.getState().liveHistory[0].id;await f.service.dispose();
   const restored=f.createService();await restored.initialize();await restored.connect();
   await restored.saveSettings({...restored.getState().settings,deleteAfterActivation:true});
-  await restored.continueLifecycle(id);expect(restored.getState().liveHistory[0]).toMatchObject({phase:'copy-retained',deleteOriginal:false});
-  expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(f.browser.sendActivation).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).not.toHaveBeenCalled();await restored.dispose();
+  await restored.continueLifecycle(id);expect(restored.getState().liveHistory[0]).toMatchObject({phase:'deleted',deleteOriginal:true});
+  expect(f.browser.duplicateLive).toHaveBeenCalledTimes(1);expect(f.browser.sendActivation).toHaveBeenCalledTimes(1);expect(f.browser.deleteLive).toHaveBeenCalledOnce();await restored.dispose();
  });
  it('turning deletion off invalidates an already prepared deletion review',async()=>{
   const f=await setup(),creation=await f.service.runLifecycle(f.original().database.id,'fixture-copy');
   const deletion=await f.service.confirmLive(confirmation(creation!));expect(deletion?.action).toBe('delete');
-  await f.service.saveSettings({...f.service.getState().settings,deleteAfterActivation:false});
+  await f.service.saveLiveActionPreferences({deleteOriginal:false});
   await expect(f.service.confirmLive(confirmation(deletion!))).rejects.toThrow(/invalid, used/);
   await f.service.continueLifecycle(f.service.getState().liveHistory[0].id);
   expect(f.service.getState().liveHistory[0].phase).toBe('copy-retained');expect(f.browser.deleteLive).not.toHaveBeenCalled();

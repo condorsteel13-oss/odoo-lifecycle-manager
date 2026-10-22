@@ -24,10 +24,11 @@ beforeEach(()=>{
  mocks.reader.manage.mockImplementation(async database=>({...database,expiresAt:null,remainingDays:31,expirationObservedAt:'2026-10-19T17:00:00Z'}));
 });
 describe('manual Chrome handoff and session lifetime',()=>{
- it('leaves accounting alone during discovery',async()=>{
+ it('reads accounting Manage expiry using the same discovery checks',async()=>{
   mocks.reader.list.mockResolvedValue(rpc({databases:[{...row,db_name:'example-accounting-0805',url:'https://example-accounting-0805.odoo.com'}]}));
+  mocks.reader.session.mockResolvedValue(rpc({uid:1,db:'example-accounting-0805'}));
   const connection=new ReadOnlyBrowser('/fixture','',()=>{});const result=await connection.refresh();
-  expect(result.databases[0].expirationEvidence).toMatch(/Excluded/);expect(mocks.reader.session).not.toHaveBeenCalled();expect(mocks.reader.manage).not.toHaveBeenCalled();expect(mocks.reader.authenticate).not.toHaveBeenCalled();await connection.close();
+  expect(result.databases[0].remainingDays).toBe(31);expect(mocks.reader.session).toHaveBeenCalledOnce();expect(mocks.reader.manage).toHaveBeenCalledOnce();expect(mocks.reader.authenticate).not.toHaveBeenCalled();await connection.close();
  });
  it('does not attach before handoff and preserves the guarded session across refreshes',async()=>{
   const connection=new ReadOnlyBrowser('/fixture','',()=>{});

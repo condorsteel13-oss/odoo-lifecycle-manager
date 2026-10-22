@@ -12,8 +12,8 @@ export function AppGuide() {
 
     <div className="guide-controls">
       <h3>Two separate controls</h3>
-      <p><strong>Safe mode</strong> in Settings asks before creation and, when enabled, before deletion. Turning Safe mode off removes those prompts; it does not start a cycle by itself. Enabled rules can run at the next check.</p>
-      <p><strong>Delete original after successful activation</strong> in Automation decides whether a lifecycle deletes the parent. Leave it off to test: both databases are kept, even with Safe mode off. Turning it on later does not change a cycle that started with deletion off.</p>
+      <p><strong>Safe mode</strong> in Settings asks before duplication, sending activation email, activating the copy and, when enabled, deleting the original. Read-only verification continues automatically. Turning Safe mode off removes those prompts; it does not start a cycle by itself. Enabled rules can run at the next check.</p>
+      <p><strong>Delete original after successful activation</strong> in Settings → Live actions (also available in Live actions and Automation) decides whether a lifecycle deletes the parent. Leave it off to test: both databases are kept, even with Safe mode off. Continuing an unfinished cycle uses the current setting. Completed cycles stay closed.</p>
     </div>
 
     <h3 className="guide-sections-title">What each workspace section does</h3>
@@ -32,7 +32,7 @@ export function AppGuide() {
         <summary>Automation <span>Run when databases approach expiry</span></summary>
         <p>Choose a threshold, check interval, and all or selected databases. For example, a threshold of 3 matches databases with 0–3 days remaining.</p>
         <p><strong>Automatic monitoring</strong> refreshes and simulates only. <strong>Run lifecycle automatically</strong> enables real cycles. Choose the deletion setting, then click <strong>Save monitoring rule</strong>.</p>
-        <p><strong>Run lifecycle rule now</strong> checks the saved rule immediately. With Safe mode on, matching databases wait in the Live actions queue for review. Keep the app open and the Mac awake for scheduled checks. Accounting is excluded.</p>
+        <p><strong>Run lifecycle rule now</strong> checks the saved rule immediately. With Safe mode on, matching databases wait in the Live actions queue for review. Keep the app open and the Mac awake for scheduled checks.</p>
       </details>
       <details>
         <summary>Simulation history <span>Review plans without making changes</span></summary>

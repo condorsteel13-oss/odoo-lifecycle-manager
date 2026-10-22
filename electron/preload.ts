@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { AppAPI, AppState } from '../src/shared/types';
 const api: AppAPI = {
+  saveLiveActionPreferences: input => ipcRenderer.invoke('app:live-action-preferences', input),
   saveWorkflowPreferences: input => ipcRenderer.invoke('app:workflow-preferences', input),
   saveLifecyclePreferences:input=>ipcRenderer.invoke('app:lifecycle-preferences',input),
   runLifecycle:(id,name)=>ipcRenderer.invoke('app:lifecycle-run',id,name),

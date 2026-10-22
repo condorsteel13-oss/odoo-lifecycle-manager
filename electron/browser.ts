@@ -5,8 +5,7 @@ import { ManualChrome } from './chrome-login';
 import { MetadataReader } from './reader';
 import { parseDatabaseList, requireDatabaseSession } from './metadata';
 import { LOGIN_URL } from './policy';
-import { assertUnprotected, type LiveInspection } from './live-contract';
-import { isProtected } from '../src/shared/live';
+import { type LiveInspection } from './live-contract';
 import type { SessionVault } from './session-vault';
 import { connectionTimeout } from './timeout';
 import { BackgroundPages, enableBackgroundPages } from './background-pages';
@@ -82,7 +81,6 @@ export class ReadOnlyBrowser {
     const warnings: string[]=[];
     for(const row of listed) {
       this.assertActive();
-      if(isProtected(row.database.name)) { row.database.expirationEvidence='Excluded at your request. No database session or Manage page was read.'; continue; }
       try {
         try { requireDatabaseSession(row.database,await reader.session(row.database.url!)); }
         catch(error) {
@@ -110,11 +108,10 @@ export class ReadOnlyBrowser {
   resumeActivation(target:LiveInspection,email:string){return this.activeReader().resumeActivation(target,email);}
   async liveList(){return parseDatabaseList(await this.activeReader().list());}
   async inspectLive(id:string):Promise<LiveInspection>{
-    assertUnprotected(id);
     const reader=this.activeReader();const listed=await this.liveList();
     const row=listed.find(r=>r.database.id===id);
     if(!row)throw new AppError('DATABASE_MISSING','The selected database is no longer in the account list.');
-    assertUnprotected(row.database.name);reader.allowDatabases([row.database.url!]);
+    reader.allowDatabases([row.database.url!]);
     try{requireDatabaseSession(row.database,await reader.session(row.database.url!));}
     catch(error){if(!(error instanceof AppError)||error.code!=='SESSION_EXPIRED')throw error;await reader.authenticate(row.database.url!,row.uuid,row.database.name);requireDatabaseSession(row.database,await reader.session(row.database.url!));}
     return reader.inspectLive(row.database,row.uuid,row.parentUuid);

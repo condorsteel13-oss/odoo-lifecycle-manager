@@ -1,6 +1,6 @@
 import { load } from 'cheerio';
 import type { Database } from '../src/shared/types';
-import { isProtected, validCopyName } from '../src/shared/live';
+import { validCopyName } from '../src/shared/live';
 import { AppError } from './errors';
 import { parseManagePage, validateTarget } from './manage';
 
@@ -10,14 +10,10 @@ export interface LiveInspection {
   neutralized: boolean; token: string; accessToken: string | false;
   subId: number | false; isPaid: boolean; plan: string;
 }
-export function assertUnprotected(name: string) {
-  if (isProtected(name)) throw new AppError('PROTECTED_DATABASE', 'The accounting database is excluded from all lifecycle actions.');
-}
 export function assertCopyName(name: string, original: string) {
   if (!validCopyName(name) || name === original || (name.startsWith('edu-') && !original.startsWith('edu-'))) throw new AppError('INVALID_COPY_NAME', 'Use a different name of 4–50 lowercase letters, digits or hyphens. Do not add the edu- prefix.');
 }
 export function parseLiveInspection(database: Database, uuid: string, parentUuid: string | null, html: string): LiveInspection {
-  assertUnprotected(database.name); assertUnprotected(database.id);
   validateTarget(database.url!, uuid, database.name);
   const parsed = parseManagePage(database, html, new Date(), uuid);
   const $ = load(html); const nodes = $('owl-component[name="openerp_enterprise.MyDatabaseInfo"]');

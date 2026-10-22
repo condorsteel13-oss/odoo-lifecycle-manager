@@ -1,11 +1,6 @@
 import type { LifecycleProgress } from './progress';
 import type { Database } from './types';
 
-// Protect accounting databases across accounts without embedding customer names.
-export function isProtected(name: string) {
-  const databaseName = name.toLowerCase().replace(/^https:\/\//, '').replace(/\.odoo\.com$/, '');
-  return /(^|-)accounting(-|$)/.test(databaseName);
-}
 export type LivePhase = 'duplicate-submitting' | 'duplicate-unknown' | 'awaiting-copy' | 'activation-pending' | 'awaiting-expiry' | 'copy-verified' | 'delete-submitting' | 'delete-unknown' | 'deleted' | 'copy-removed' | 'copy-retained';
 export interface ActivationRecord {
   userEmail: string; recipientEmail: string | null;
@@ -46,4 +41,4 @@ export interface LiveConfirmation {
   backupConfirmed?: boolean; backupReference?: string;
   integrityConfirmed?: boolean; integrityNotes?: string; subscriptionReviewed?: boolean;
 }
-export function validCopyName(name: string) { return /^[a-z0-9][a-z0-9-]{2,48}[a-z0-9]$/.test(name) && !isProtected(name); }
+export function validCopyName(name: string) { return /^[a-z0-9][a-z0-9-]{2,48}[a-z0-9]$/.test(name); }

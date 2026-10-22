@@ -1,4 +1,3 @@
-import { isProtected } from '../shared/live';
 import { DEFAULT_WORKFLOW_PREFERENCES } from '../shared/workflow';
 
 export function copyNameTemplateError(template: string): string | null {
@@ -6,7 +5,6 @@ export function copyNameTemplateError(template: string): string | null {
   if (!/^(?:[a-z0-9-]|\{name\}|\{date\})+$/.test(template) || (template.match(/\{date\}/g) ?? []).length > 1) return 'Use lowercase letters, numbers, hyphens, {name}, and optionally one {date}.';
   const fixed = template.replace('{name}', '').replace('{date}', '20261021');
   if (fixed.length > 40) return 'Keep the text outside {name}, including the eight-digit date, within 40 characters.';
-  if (isProtected(template.replace('{name}', 'example').replace('{date}', '20261021'))) return 'Accounting names are protected. Choose a different template.';
   return null;
 }
 

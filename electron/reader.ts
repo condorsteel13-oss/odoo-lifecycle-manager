@@ -3,7 +3,7 @@ import { AppError } from './errors';
 import { databaseOrigin } from './metadata';
 import { connectForm, oeaTarget, parseManagePage, validateTarget } from './manage';
 import type { Database } from '../src/shared/types';
-import { assertCopyName, assertUnprotected, parseLiveInspection, type LiveInspection } from './live-contract';
+import { assertCopyName, parseLiveInspection, type LiveInspection } from './live-contract';
 import { parseActivation, sameEmail, activationURL } from './activation';
 import { actionDestination } from './action-diagnostics';
 import { ActivationFlow, MemoryActivationJournal, type ActivationJournal } from './activation-flow';
@@ -130,11 +130,9 @@ export class MetadataReader {
  }
  async manage(database:Database,uuid:string):Promise<Database>{return parseManagePage(database,await this.manageHTML(database,uuid),new Date(),uuid);}
  async inspectLive(database:Database,uuid:string,parentUuid:string|null):Promise<LiveInspection>{
-  assertUnprotected(database.name);assertUnprotected(database.id);
   return parseLiveInspection(database,uuid,parentUuid,await this.manageHTML(database,uuid));
  }
  async activation(target:LiveInspection){
-  assertUnprotected(target.database.name);assertUnprotected(target.database.id);
   validateTarget(target.database.url!,target.uuid,target.database.name);
   const response=await this.request(target.database.url!+'/saas_worker/trial_info',{body:JSON.stringify({jsonrpc:'2.0',method:'call',params:{},id:1}),contentType:'application/json'});
   if(response.status!==200||!response.contentType.includes('application/json'))throw new AppError('ACTIVATION_UNAVAILABLE','Odoo could not read activation status. No email was sent.');
@@ -151,7 +149,6 @@ export class MetadataReader {
   if(typeof result.success!=='string'||!result.success||result.error)throw new AppError('ACTIVATION_SEND_UNKNOWN','The activation email was not confirmed. Check the mailbox; no automatic resend will occur.');
  }
  async activateFromEmail(target:LiveInspection,link:string){
-  assertUnprotected(target.database.name);assertUnprotected(target.database.id);
   validateTarget(target.database.url!,target.uuid,target.database.name);
   const info=await this.activation(target);
   if(!info.pending)return;
@@ -160,7 +157,6 @@ export class MetadataReader {
  }
  private activationFlow(){return new ActivationFlow(this.activationJournal,url=>this.request(url,{redirect:'manual'}),this.diagnostic);}
  async resumeActivation(target:LiveInspection,expectedEmail:string){
-  assertUnprotected(target.database.name);assertUnprotected(target.database.id);
   validateTarget(target.database.url!,target.uuid,target.database.name);
   const info=await this.activation(target);
   if(!sameEmail(info.userEmail,expectedEmail))throw new AppError('ACTIVATION_CHANGED','The signed-in user changed. No activation handoff was opened.');
@@ -178,7 +174,7 @@ export class MetadataReader {
   return envelope.result;
  }
  async duplicateLive(target:LiveInspection,copyName:string){
-  assertUnprotected(target.database.name);assertUnprotected(target.database.id);assertCopyName(copyName,target.database.name);
+  assertCopyName(copyName,target.database.name);
   validateTarget(target.database.url!,target.uuid,target.database.name);
   const started=Date.now();
   let result:Record<string,any>;
@@ -199,7 +195,7 @@ export class MetadataReader {
   if(result.error)throw new AppError('COPY_NAME_TAKEN','Odoo reports that this copy name is unavailable. Choose another name.');
  }
  async deleteLive(target:LiveInspection){
-  assertUnprotected(target.database.name);assertUnprotected(target.database.id);validateTarget(target.database.url!,target.uuid,target.database.name);
+  validateTarget(target.database.url!,target.uuid,target.database.name);
   const params:Record<string,unknown>={token:target.token,access_token:target.accessToken,is_paid:target.isPaid};
   if(target.subId)params.sub_id=target.subId;
   const portal=await this.liveRPC(ACCOUNT_ORIGIN,'/my/databases/delete',params);

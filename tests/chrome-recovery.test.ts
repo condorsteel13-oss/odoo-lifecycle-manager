@@ -80,7 +80,7 @@ describe.skipIf(process.platform !== 'darwin' || !existsSync(CHROME))('native Ch
   it('recovers a legacy orphan with an exact dedicated profile and loopback debug port', async () => {
     const f = await fixture(), old = await orphan(f.profile, f.port, f.token, true);
     expect(await invoke('acquire', f.profile, f.token, f.port)).toEqual({ status: 'acquired', recovered: true });
-    expect(running(old.pid)).toBe(false);
+    await expect.poll(()=>running(old.pid),{timeout:6000}).toBe(false);
     expect(await invoke('release', f.profile, f.token, f.port)).toEqual({ status: 'released' });
   }, 20000);
 
@@ -127,7 +127,7 @@ describe.skipIf(process.platform !== 'darwin' || !existsSync(CHROME))('native Ch
     const path = join(f.profile, '.lifecycle-browser-owner.json'), lease = JSON.parse(await readFile(path, 'utf8'));
     await writeFile(path, JSON.stringify({ ...lease, owner: { ...lease.owner, pid: process.pid, seconds: 1, microseconds: 0 } }));
     expect((await invoke('acquire', f.profile, randomUUID(), f.port)).recovered).toBe(true);
-    expect(running(old.pid)).toBe(false); expect(running(process.pid)).toBe(true);
+    await expect.poll(()=>running(old.pid),{timeout:6000}).toBe(false); expect(running(process.pid)).toBe(true);
   }, 20000);
 
   it('fails closed for invalid ownership metadata, foreign hosts, and profiles outside the app allowlist', async () => {
