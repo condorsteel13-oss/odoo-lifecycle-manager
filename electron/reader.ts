@@ -7,6 +7,7 @@ import { assertCopyName, parseLiveInspection, type LiveInspection } from './live
 import { parseActivation, sameEmail, activationURL } from './activation';
 import { actionDestination } from './action-diagnostics';
 import { ActivationFlow, MemoryActivationJournal, type ActivationJournal } from './activation-flow';
+import { readerDeadline, closeReaderPage } from './browser-deadline';
 export const ACCOUNT_ORIGIN='https://www.odoo.com';
 export const LIST_PATH='/odoo-enterprise/databases';
 export const SESSION_PATH='/web/session/get_session_info';
@@ -19,7 +20,7 @@ export class MetadataReader {
  private violation:AppError|null=null;
  private pages=new Set<Page>();
  private origins=new Set([ACCOUNT_ORIGIN]);
- constructor(private context:BrowserContext,private createPage:()=>Promise<Page>=()=>context.newPage(),private diagnostic:(event:AppError)=>void=()=>{},private activationJournal:ActivationJournal=new MemoryActivationJournal()){}
+ constructor(private context:BrowserContext,private createPage:()=>Promise<Page>=()=>context.newPage(),private diagnostic:(event:AppError)=>void=()=>{},private activationJournal:ActivationJournal=new MemoryActivationJournal(),private requestBudgetMs=35000){}
  async install(beforeClose?:()=>Promise<void>){
   const existingPages=this.context.pages();
   await this.context.routeWebSocket('**/*',socket=>socket.close());
@@ -45,41 +46,46 @@ export class MetadataReader {
  }
  // All callers below construct fixed, validated requests. No generic transport is
  // available to IPC, remote HTML or renderer code. Native fetch never auto-redirects.
- private async request(url:string,options:{body?:string;contentType?:string;redirect?:'error'|'manual'}={}):Promise<Result>{
+ private async request(url:string,options:{body?:string;contentType?:string;redirect?:'error'|'manual';timeoutMs?:number}={}):Promise<Result>{
   this.assertSafe();const origin=new URL(url).origin;
   if(!this.origins.has(origin))throw new AppError('SAFETY_STOP','An unsupported request origin was rejected.');
   const page=await this.createPage();this.pages.add(page);
-  try{
-   const cdp=await this.context.newCDPSession(page);
-   await cdp.send('ServiceWorker.enable');await cdp.send('ServiceWorker.stopAllWorkers');
-   await cdp.send('Network.enable');await cdp.send('Network.setBypassServiceWorker',{bypass:true});
-   await page.goto(origin+DOCUMENT_PATH,{waitUntil:'domcontentloaded',timeout:15000});
-   let requestId:string|undefined;let redirect:{status:number;location:string|null}|undefined;
-   cdp.on('Network.requestWillBeSent',event=>{if(event.request.url===url) requestId=event.requestId;});
-   let receivedHeaders!:()=>void;
-   const headers=new Promise<void>(resolve=>{receivedHeaders=resolve;});
-   cdp.on('Network.responseReceivedExtraInfo',event=>{
-    if(event.requestId===requestId&&event.statusCode>=300&&event.statusCode<400){
-     const location=Object.entries(event.headers).find(([key])=>key.toLowerCase()==='location')?.[1];
-     redirect={status:event.statusCode,location:typeof location==='string'?location:null};receivedHeaders();
+  const budget=options.timeoutMs??this.requestBudgetMs;
+  try{return await readerDeadline(page,async check=>{
+    const cdp=await this.context.newCDPSession(page);
+    await cdp.send('Page.setWebLifecycleState',{state:'active'});
+    await cdp.send('ServiceWorker.enable');await cdp.send('ServiceWorker.stopAllWorkers');
+    await cdp.send('Network.enable');await cdp.send('Network.setBypassServiceWorker',{bypass:true});
+    await page.goto(origin+DOCUMENT_PATH,{waitUntil:'domcontentloaded',timeout:15000});
+    check();
+    let requestId:string|undefined;let redirect:{status:number;location:string|null}|undefined;
+    cdp.on('Network.requestWillBeSent',event=>{if(event.request.url===url) requestId=event.requestId;});
+    let receivedHeaders!:()=>void;
+    const headers=new Promise<void>(resolve=>{receivedHeaders=resolve;});
+    cdp.on('Network.responseReceivedExtraInfo',event=>{
+     if(event.requestId===requestId&&event.statusCode>=300&&event.statusCode<400){
+      const location=Object.entries(event.headers).find(([key])=>key.toLowerCase()==='location')?.[1];
+      redirect={status:event.statusCode,location:typeof location==='string'?location:null};receivedHeaders();
+     }
+    });
+    const method=options.body===undefined?'GET':'POST';
+    this.permit={page,url,method,body:options.body,contentType:options.contentType};
+    const result=await page.evaluate(async({url,method,body,contentType,redirect,timeoutMs})=>{
+     try{
+      const response=await fetch(url,{method,body,headers:contentType?{'Content-Type':contentType}:{},credentials:'same-origin',redirect,cache:'no-store',signal:AbortSignal.timeout(timeoutMs)});
+      const text=await response.text();
+      if(text.length>12_000_000)return {status:413,body:'',contentType:''};
+      return {status:response.status,body:text,contentType:response.headers.get('content-type')??''};
+     }catch{return {status:-1,body:'',contentType:''};}
+    },{url,method,body:options.body,contentType:options.contentType,redirect:options.redirect??'error',timeoutMs:options.timeoutMs?Math.max(1,budget-15000):30000});
+    check();
+    if(result.status===0&&options.redirect==='manual'){
+     let timer:ReturnType<typeof setTimeout>|undefined;
+     await Promise.race([headers,new Promise<void>(resolve=>{timer=setTimeout(resolve,1000);})]);clearTimeout(timer);
     }
-   });
-   const method=options.body===undefined?'GET':'POST';
-   this.permit={page,url,method,body:options.body,contentType:options.contentType};
-   const result=await page.evaluate(async({url,method,body,contentType,redirect})=>{
-    try{
-     const response=await fetch(url,{method,body,headers:contentType?{'Content-Type':contentType}:{},credentials:'same-origin',redirect,cache:'no-store',signal:AbortSignal.timeout(30000)});
-     const text=await response.text();
-     if(text.length>12_000_000)return {status:413,body:'',contentType:''};
-     return {status:response.status,body:text,contentType:response.headers.get('content-type')??''};
-    }catch{return {status:-1,body:'',contentType:''};}
-   },{url,method,body:options.body,contentType:options.contentType,redirect:options.redirect??'error'});
-   if(result.status===0&&options.redirect==='manual'){
-    let timer:ReturnType<typeof setTimeout>|undefined;
-    await Promise.race([headers,new Promise<void>(resolve=>{timer=setTimeout(resolve,1000);})]);clearTimeout(timer);
-   }
-   this.assertSafe();return {...result,...redirect,location:redirect?.location??null};
-  }finally{this.permit=null;this.pages.delete(page);await page.close().catch(()=>{});}
+    this.assertSafe();return {...result,...redirect,location:redirect?.location??null};
+  },budget,'BROWSER_REQUEST_TIMEOUT','The browser request did not finish within its time limit. An already submitted action may still complete; no request was retried. Use the action log to verify.');}
+  finally{this.permit=null;this.pages.delete(page);await closeReaderPage(page);}
  }
  private async json(origin:string,path:string,params?:Record<string,unknown>){
   const allowed=(origin===ACCOUNT_ORIGIN&&path===LIST_PATH&&JSON.stringify(params)==='{"share":false}')||(origin!==ACCOUNT_ORIGIN&&this.origins.has(origin)&&((path===SESSION_PATH&&JSON.stringify(params)==='{}')||(path===INFO_PATH&&params===undefined)));
@@ -167,7 +173,7 @@ export class MetadataReader {
  // Only activation's identity-bound handoffs can redirect. No remote script,
  // automatic mutation retry or arbitrary method is accepted.
  private async liveRPC(origin:string,path:string,params:Record<string,unknown>):Promise<Record<string,any>>{
-  const response=await this.request(origin+path,{body:JSON.stringify({jsonrpc:'2.0',method:'call',params,id:1}),contentType:'application/json'});
+  const response=await this.request(origin+path,{body:JSON.stringify({jsonrpc:'2.0',method:'call',params,id:1}),contentType:'application/json',...(path==='/saas_worker/dup/json'?{timeoutMs:135000}:{})});
   if(response.status!==200||!response.contentType.includes('application/json'))throw new AppError('LIVE_OUTCOME_UNKNOWN','Odoo did not confirm the result. Do not retry; inspect the live action log and verify in Odoo.');
   let envelope:any;try{envelope=JSON.parse(response.body);}catch{}
   if(envelope?.jsonrpc!=='2.0'||envelope.error||!envelope.result||typeof envelope.result!=='object'||Array.isArray(envelope.result))throw new AppError('LIVE_OUTCOME_UNKNOWN','Odoo did not confirm the result. Do not retry; inspect the live action log and verify in Odoo.');

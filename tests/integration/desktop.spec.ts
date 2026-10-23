@@ -37,14 +37,14 @@ test('desktop covers all screens, simulations, automatic deduplication, export a
   expect(await readFile(exportPath, 'utf8')).not.toMatch(/"cookies"|"password"|"session"/);
   await page.getByRole('button', { name: 'Close details' }).click();
   await page.getByRole('button', { name: 'Automation', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '3 matching databases' })).toBeVisible();
-  await page.getByRole('button', { name: 'Run saved rule now' }).click();
+  await expect(page.getByRole('heading', { name: 'No automatic actions' })).toBeVisible();
+  await page.getByRole('button', { name: 'Check now (read-only)' }).click();
   await expect.poll(async () => (await page.evaluate(() => window.lifecycle.state())).history.length).toBe(5);
-  await page.getByRole('button', { name: 'Run saved rule now' }).click();
+  await page.getByRole('button', { name: 'Check now (read-only)' }).click();
   await expect.poll(async () => (await page.evaluate(() => window.lifecycle.state())).busy).toBe(false);
   expect((await page.evaluate(() => window.lifecycle.state())).history.length).toBe(5);
   await page.getByRole('spinbutton', { name: 'Expiration threshold' }).fill('5');
-  await page.getByRole('button', { name: 'Save monitoring rule' }).click();
+  await page.getByRole('button', { name: 'Save automation' }).click();
   await page.getByRole('button', { name: 'Connection', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Connect Odoo and Viamail once' })).toBeVisible();
   await expect(page.getByRole('region',{name:'Viamail connection'})).toBeVisible();
@@ -96,12 +96,13 @@ test('Safe mode opt-out and scheduled scope persist without starting any live wo
  await safe.click();await expect(safe).toBeChecked();
  await desktop.evaluate(({dialog})=>{dialog.showMessageBox=async()=>({response:1,checkboxChecked:false});});await safe.click();await expect(safe).not.toBeChecked();
  expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toEqual([]);
- await page.getByRole('button',{name:'Automation',exact:true}).click();const rule=page.getByRole('checkbox',{name:'Run lifecycle automatically',exact:true});await expect(rule).not.toBeChecked();
- await rule.check();await page.getByLabel('Database scope').selectOption('selected');await expect(page.getByRole('checkbox',{name:'example-accounting-0805',exact:true})).toHaveCount(1);
- await page.getByRole('checkbox',{name:'atlas-staging',exact:true}).check();await page.getByLabel('Expiration threshold').fill('2');await page.getByRole('button',{name:'Save monitoring rule',exact:true}).click();
- await expect(page.getByRole('button',{name:'Run lifecycle rule now',exact:true})).toBeEnabled();
+ await page.getByRole('button',{name:'Automation',exact:true}).click();const rule=page.getByLabel('Automation mode');await expect(rule).toHaveValue('off');
+ await rule.selectOption('lifecycle');await page.getByLabel('Database scope').selectOption('selected');await expect(page.getByRole('checkbox',{name:'example-accounting-0805',exact:true})).toHaveCount(1);
+ await expect(page.getByRole('button',{name:'Save automation',exact:true})).toBeDisabled();await expect(page.getByRole('alert')).toContainText('Select at least one database.');
+ await page.getByRole('checkbox',{name:'atlas-staging',exact:true}).check();await page.getByLabel('Expiration threshold').fill('2');await page.getByRole('button',{name:'Save automation',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Run lifecycle now',exact:true})).toBeEnabled();
  const configured=await page.evaluate(()=>window.lifecycle.state());expect(configured.settings).toMatchObject({lifecycleEnabled:true,monitoringEnabled:false,scope:'selected',thresholdDays:2,databaseIds:[discovery.databases[0].id]});expect(configured.nextCheckAt).not.toBeNull();expect(configured.liveHistory).toEqual([]);
- await page.screenshot({path:'test-results/lifecycle-rule.png',fullPage:true});await desktop.close();desktop=await launch();page=await desktop.firstWindow();
+ await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:'test-results/lifecycle-rule.png',fullPage:true});await desktop.close();desktop=await launch();page=await desktop.firstWindow();
  const restored=await page.evaluate(()=>window.lifecycle.state());expect(restored.lifecyclePreferences.safeMode).toBe(false);expect(restored.settings).toEqual(configured.settings);expect(restored.lifecycleRun).toBeNull();expect(restored.liveHistory).toEqual([]);
  await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('switch',{name:'Safe mode',exact:true}).click();await expect(page.getByRole('switch',{name:'Safe mode',exact:true})).toBeChecked();
 });
@@ -129,16 +130,50 @@ test('duplication preferences validate, preview, reach simulations, and survive 
  expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toEqual([]);
 });
 
+for (const flags of [
+ {monitoringEnabled:false,lifecycleEnabled:false,title:'Automation is off',mode:'off'},
+ {monitoringEnabled:true,lifecycleEnabled:false,title:'Monitor only is on',mode:'monitor'},
+ {monitoringEnabled:false,lifecycleEnabled:true,title:'Automatic lifecycle is on',mode:'lifecycle'},
+ {monitoringEnabled:true,lifecycleEnabled:true,title:'Automatic lifecycle is on',mode:'lifecycle'},
+]) test(`one automation mode represents saved flags ${flags.monitoringEnabled}/${flags.lifecycleEnabled} and Off disables both`,async()=>{
+ const {LocalStore}=await import('../../electron/store');const {demoDiscovery}=await import('../../src/domain/demo');
+ directory=await mkdtemp(join(tmpdir(),'odoo-simple-automation-'));const store=new LocalStore(join(directory,'data'));const {data}=await store.load();
+ await store.save({...data,discovery:demoDiscovery(),settings:{...data.settings,monitoringEnabled:flags.monitoringEnabled,lifecycleEnabled:flags.lifecycleEnabled,deleteAfterActivation:true},lastAttemptAt:new Date().toISOString()});
+ desktop=await electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
+ const page=await desktop.firstWindow();await page.getByRole('button',{name:'Automation',exact:true}).click();
+ const status=page.getByRole('region',{name:'Saved automation status'}),mode=page.getByLabel('Automation mode'),save=page.getByRole('button',{name:'Save automation',exact:true});
+ await expect(status.getByRole('heading',{name:flags.title,exact:true})).toBeVisible();await expect(mode).toHaveValue(flags.mode);await expect(save).toBeDisabled();
+ const initial=await page.evaluate(()=>window.lifecycle.state());
+ await mode.selectOption(flags.mode==='monitor'?'lifecycle':'monitor');
+ await expect(status.getByRole('heading',{name:flags.title,exact:true})).toBeVisible();
+ await expect(page.getByText('Unsaved changes. The saved automation above is still in effect.',{exact:true})).toBeVisible();
+ await expect(page.getByRole('button',{name:flags.lifecycleEnabled?'Run lifecycle now':'Check now (read-only)',exact:true})).toBeDisabled();
+ expect((await page.evaluate(()=>window.lifecycle.state())).settings).toEqual(initial.settings);
+ await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:`test-results/automation-edit-${flags.mode}-${flags.monitoringEnabled}.png`,fullPage:true});
+ if(flags.mode==='monitor'){
+  await mode.selectOption('monitor');await expect(save).toBeDisabled();
+  await mode.selectOption('lifecycle');await save.click();
+  await expect(status.getByRole('heading',{name:'Automatic lifecycle is on',exact:true})).toBeVisible();
+  expect((await page.evaluate(()=>window.lifecycle.state())).settings).toMatchObject({monitoringEnabled:false,lifecycleEnabled:true});
+ }
+ await mode.selectOption('monitor');await save.click();await expect(status.getByRole('heading',{name:'Monitor only is on',exact:true})).toBeVisible();
+ expect((await page.evaluate(()=>window.lifecycle.state())).settings).toMatchObject({monitoringEnabled:true,lifecycleEnabled:false,deleteAfterActivation:true});
+ await mode.selectOption('off');await save.click();await expect(status.getByRole('heading',{name:'Automation is off',exact:true})).toBeVisible();
+ const stopped=await page.evaluate(()=>window.lifecycle.state());expect(stopped.settings).toMatchObject({monitoringEnabled:false,lifecycleEnabled:false,deleteAfterActivation:true});expect(stopped.nextCheckAt).toBeNull();expect(stopped.liveHistory).toEqual([]);expect(stopped.lifecycleQueue).toEqual([]);
+ await desktop.close();desktop=await electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
+ const reopened=await desktop.firstWindow();await reopened.getByRole('button',{name:'Automation',exact:true}).click();await expect(reopened.getByLabel('Automation mode')).toHaveValue('off');
+});
+
 test('parent deletion defaults off and the Automation choice persists independently of Safe mode',async()=>{
  directory=await mkdtemp(join(tmpdir(),'odoo-deletion-setting-'));
  const launch=()=>electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
  desktop=await launch();let page=await desktop.firstWindow();
  await page.getByRole('button',{name:'Automation',exact:true}).click();
  const deletion=page.getByRole('checkbox',{name:'Delete original after successful activation',exact:true});
- await expect(deletion).not.toBeChecked();await expect(page.getByText(/Off by default for testing: keep the original/)).toBeVisible();
- await deletion.check();await page.getByRole('button',{name:'Save monitoring rule',exact:true}).click();
+ await expect(deletion).not.toBeChecked();await expect(page.getByText(/Keep both databases. Use this to test without deletion/)).toBeVisible();
+ await deletion.check();await page.getByRole('button',{name:'Save automation',exact:true}).click();
  await expect.poll(async()=>(await page.evaluate(()=>window.lifecycle.state())).settings.deleteAfterActivation).toBe(true);
- await deletion.uncheck();await page.getByRole('button',{name:'Save monitoring rule',exact:true}).click();
+ await deletion.uncheck();await page.getByRole('button',{name:'Save automation',exact:true}).click();
  await expect.poll(async()=>(await page.evaluate(()=>window.lifecycle.state())).settings.deleteAfterActivation).toBe(false);
  await page.screenshot({path:'test-results/automation-retain-original.png',fullPage:true});
  await desktop.close();desktop=await launch();page=await desktop.firstWindow();

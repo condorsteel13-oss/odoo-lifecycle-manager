@@ -80,7 +80,7 @@ export class MailboxBrowser {
   }
   private async checkSaved():Promise<string>{
     try{
-      if(!this.browser?.isConnected()||!this.reader||!this.chrome.isRunning){
+      if(!this.browser?.isConnected()||!this.reader?.available||!this.chrome.isRunning){
         await this.close();
         let session=await this.vault?.restoreMail();
         const endpoint=await this.chrome.launch('about:blank',this.headless);

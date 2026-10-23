@@ -11,6 +11,7 @@ import {scopedActivationMessage} from '../../electron/mailbox';
 import { readActivationMessage } from '../../electron/mailbox';
 import { MetadataReader, LIST_PATH, SESSION_PATH, INFO_PATH } from '../../electron/reader';
 import {BackgroundPages,enableBackgroundPages} from '../../electron/background-pages';
+import {BACKGROUND_EXECUTION_FLAGS} from '../../electron/chrome-login';
 let browser: Browser;
 let backgroundBrowser: Browser;
 let backgroundLauncher: ChildProcess;
@@ -24,6 +25,8 @@ let manageLogin = false;
 let liveMode = false;
 let liveRedirect = false;
 let portalFailure = false;
+let duplicationDelayMs=0;
+let stallMetadataRead=false;
 let activationRecipient='previous@example.com';
 let activationHandoff=false;
 let mailboxMode='ok';
@@ -64,7 +67,8 @@ test.beforeAll(async () => {
       let body='';req.on('data',chunk=>{body+=chunk;});req.on('end',()=>{
         liveBodies.push({path:req.url!,params:JSON.parse(body).params});
         if(liveRedirect){res.writeHead(302,{location:'https://www.odoo.com/odoo-enterprise/delete-database'});res.end();return;}
-        res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({jsonrpc:'2.0',id:1,result:req.url==='/odoo-enterprise/trial-check'?{error:false}:req.url==='/saas_worker/dup/json'?{success:'https://fixture.odoo.com/progress'}:{result:!(portalFailure&&req.url==='/my/databases/delete')}}));
+        const reply=()=>{res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({jsonrpc:'2.0',id:1,result:req.url==='/odoo-enterprise/trial-check'?{error:false}:req.url==='/saas_worker/dup/json'?{success:'https://fixture.odoo.com/progress'}:{result:!(portalFailure&&req.url==='/my/databases/delete')}}));};
+        if(req.url==='/saas_worker/dup/json'&&duplicationDelayMs)setTimeout(reply,duplicationDelayMs);else reply();
       });return;
     }
     if(req.url === '/my/databases/connect/'+uuid+'?manage_db=true') {
@@ -76,6 +80,7 @@ test.beforeAll(async () => {
     if(req.url?.startsWith('/my/database?')){res.writeHead(200,{'content-type':'text/html'});res.end(manageHTML);return;}
     if(req.url?.startsWith('/auth_oauth/oea?')) {res.writeHead(303,{location:'/odoo','set-cookie':'db_session=fixture; Path=/; Secure; HttpOnly'});res.end();return;}
     if (req.url === LIST_PATH || req.url === SESSION_PATH) {
+      if(stallMetadataRead)return;
       if(redirectRead) {res.writeHead(302,{location:'/my/databases/delete'});res.end();return;}
       res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({jsonrpc:'2.0',id:1,result:req.url === LIST_PATH ? {databases:[]} : {uid:1,db:'fixture',expiration_date:'2026-10-22 14:00:00'}}));return;
     }
@@ -96,13 +101,13 @@ test.beforeAll(async () => {
   // Exercise the production normal-Chrome hidden-target behavior. The same
   // loopback proxy prevents any request from reaching a real account.
   const debugPort=await new Promise<number>((resolve,reject)=>{const s=portServer();s.on('error',reject);s.listen(0,'127.0.0.1',()=>{const p=(s.address() as {port:number}).port;s.close(()=>resolve(p));});});
-  backgroundLauncher = spawn(resolve('dist-electron/chrome-background'),[`--user-data-dir=${join(directory,'chrome')}`,`--remote-debugging-port=${debugPort}`,'--remote-debugging-address=127.0.0.1','--no-first-run','--no-default-browser-check','--no-startup-window',`--proxy-server=http://127.0.0.1:${(proxy.address() as {port:number}).port}`],{stdio:['ignore','pipe','ignore']});
+  backgroundLauncher = spawn(resolve('dist-electron/chrome-background'),[`--user-data-dir=${join(directory,'chrome')}`,`--remote-debugging-port=${debugPort}`,'--remote-debugging-address=127.0.0.1','--no-first-run','--no-default-browser-check','--no-startup-window',...BACKGROUND_EXECUTION_FLAGS,`--proxy-server=http://127.0.0.1:${(proxy.address() as {port:number}).port}`],{stdio:['ignore','pipe','ignore']});
   await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Hidden launch timed out')),10000);backgroundLauncher.stdout!.once('data',data=>{clearTimeout(timer);String(data).includes('ready')?resolve():reject(new Error('Unexpected launcher response'));});backgroundLauncher.once('error',reject);});
   await expect.poll(async()=>{try{return(await fetch(`http://127.0.0.1:${debugPort}/json/version`)).ok;}catch{return false;}}).toBe(true);
   backgroundBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
 });
 test.afterAll(async () => { if(backgroundLauncher&&backgroundLauncher.exitCode===null&&backgroundLauncher.signalCode===null){backgroundLauncher.kill('SIGTERM');await new Promise<void>(resolve=>{const t=setTimeout(()=>{backgroundLauncher.kill('SIGKILL');resolve();},5000);backgroundLauncher.once('exit',()=>{clearTimeout(t);resolve();});});} await backgroundBrowser?.close().catch(()=>{}); await browser?.close(); server?.closeAllConnections(); server?.close(); proxy?.closeAllConnections(); proxy?.close(); if (directory) rmSync(directory, { recursive: true, force: true }); });
-test.beforeEach(() => { activationHandoff=false;mailboxMode='ok';mailBodies=[];activationRecipient='previous@example.com'; redirectRead = false; formLogin=false; manageLogin=false; liveMode=false;liveRedirect=false;portalFailure=false;liveBodies=[];received = []; authDestination = 'https://fixture.odoo.com/auth_oauth/oea?db=fixture&access_token=local-fixture-token'; });
+test.beforeEach(() => { stallMetadataRead=false;duplicationDelayMs=0;activationHandoff=false;mailboxMode='ok';mailBodies=[];activationRecipient='previous@example.com'; redirectRead = false; formLogin=false; manageLogin=false; liveMode=false;liveRedirect=false;portalFailure=false;liveBodies=[];received = []; authDestination = 'https://fixture.odoo.com/auth_oauth/oea?db=fixture&access_token=local-fixture-token'; });
 
 test('native metadata reads use only fixed routes and no document reaches the server',async()=>{
  const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});
@@ -113,13 +118,17 @@ test('native metadata reads use only fixed routes and no document reaches the se
  await expect(reader.session('https://other.odoo.com')).rejects.toThrow(/fixed/);
  await context.close();
 });
-async function hiddenFixture(){
+async function hiddenFixture(suspendNewPages=false,budgetMs=35000){
  const context=await backgroundBrowser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});
  const cdp=await backgroundBrowser.newBrowserCDPSession();
  const {browserContextIds}=await cdp.send('Target.getBrowserContexts');await cdp.detach();
  expect(browserContextIds).toHaveLength(1);expect(context.pages()).toHaveLength(0);
  const pages=await BackgroundPages.create(backgroundBrowser,context,browserContextIds[0]);
- const reader=new MetadataReader(context,()=>pages.newPage());await reader.install(()=>pages.keepAlive());reader.allowDatabases(['https://fixture.odoo.com']);
+ const reader=new MetadataReader(context,async()=>{
+  const page=await pages.newPage();
+  if(suspendNewPages){const session=await context.newCDPSession(page);await session.send('Page.setWebLifecycleState',{state:'frozen'});await session.detach();}
+  return page;
+ },undefined,undefined,budgetMs);await reader.install(()=>pages.keepAlive());reader.allowDatabases(['https://fixture.odoo.com']);
  return {context,pages,reader};
 }
 test('hidden reader targets have no window, retain the guards, and close after each read',async()=>{
@@ -138,6 +147,28 @@ test('hidden reader refuses redirects and untrusted requests without opening vis
  await expect(reader.list()).rejects.toThrow(/metadata/);expect(received).toEqual(['POST '+LIST_PATH]);
  const page=await pages.newPage();await page.goto('https://www.odoo.com/my/databases/delete').catch(()=>{});
  expect(received).toEqual(['POST '+LIST_PATH]);await page.close();expect(context.pages()).toHaveLength(1);await context.close();
+});
+test('hidden reader reactivates suspended targets without opening a browser window',async()=>{
+ const {context,reader}=await hiddenFixture(true);
+ expect(await reader.session('https://fixture.odoo.com')).toMatchObject({result:{uid:1}});
+ expect(context.pages()).toHaveLength(1);expect(received).toEqual(['POST '+SESSION_PATH]);await context.close();
+});
+test('a stalled hidden request releases the reader on the app deadline without any retry',async()=>{
+ const {context,reader}=await hiddenFixture(false,250);stallMetadataRead=true;
+ await expect(reader.list()).rejects.toMatchObject({code:'BROWSER_REQUEST_TIMEOUT'});
+ expect(received).toEqual(['POST '+LIST_PATH]);expect(liveBodies).toEqual([]);expect(context.pages()).toHaveLength(1);await context.close();
+});
+test('hidden Chrome completes a delayed duplication and the guarded activation/deletion adapters without showing windows',async()=>{
+ test.setTimeout(55000);
+ const {context,reader}=await hiddenFixture();liveMode=true;duplicationDelayMs=31000;
+ await reader.duplicateLive(liveTarget(),'fixture-copy');
+ expect(liveBodies.filter(row=>row.path==='/saas_worker/dup/json')).toHaveLength(1);
+ expect(await reader.activation(liveTarget())).toMatchObject({pending:true});
+ await reader.sendActivation(liveTarget(),'current@example.com');activationHandoff=true;
+ await reader.activateFromEmail(liveTarget(),'https://www.odoo.com/odoo-enterprise/confirm-database/fixture/'+('x'.repeat(140))+'?username=current%40example.com&email=current%40example.com&country_id=38');
+ await reader.deleteLive(liveTarget());
+ expect(liveBodies.map(row=>row.path)).toEqual(['/saas_worker/dup/json','/saas_worker/send_activation_email','/my/databases/delete','/saas_worker/drop/json']);
+ expect(context.pages()).toHaveLength(1);await context.close();
 });
 test('a server redirect toward a mutation is never followed by native fetch',async()=>{
  const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});
@@ -293,6 +324,12 @@ test('headless Viamail check loads no mailbox page or messages and scoped activa
  expect(received).toEqual(['GET /api/v1/settings/user-mail','POST /api/v1/mail/messages','POST /api/v1/mail/message']);
  await expect(reader.activationRead('/api/v1/mail/messages',{ownerEmailAddress:'other@example.com'},'other@example.com')).rejects.toThrow(/does not match/);
  const page=await context.newPage();await page.goto('https://mail.viamtl.com/api/v1/mail/delete-messages').catch(()=>{});expect(received).toHaveLength(3);await context.close();
+});
+test('Viamail reactivates its suspended reader before checking the saved connection',async()=>{
+ const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});
+ const reader=new MailReader(context,{email:'user@example.com',accessToken:mailToken(),refreshToken:'fixture-refresh'},async()=>{});await reader.install();
+ const cdp=await context.newCDPSession(context.pages()[0]);await cdp.send('Page.setWebLifecycleState',{state:'frozen'});await cdp.detach();
+ expect(await reader.check()).toBe('user@example.com');expect(received).toEqual(['GET /api/v1/settings/user-mail']);expect(mailBodies).toEqual([]);await context.close();
 });
 test('expired access tokens refresh once and save the rotated token before reads',async()=>{
  const context=await browser.newContext({ignoreHTTPSErrors:true,serviceWorkers:'block'});let saved=false;

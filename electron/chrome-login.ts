@@ -7,6 +7,8 @@ import { AppError } from './errors';
 import { ChromeProfileOwnership } from './chrome-recovery';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 type ChromeDisplay = boolean | 'background';
+// Apply only to the app's non-visible Chrome instance, never personal Chrome.
+export const BACKGROUND_EXECUTION_FLAGS=['--disable-background-timer-throttling','--disable-renderer-backgrounding','--disable-backgrounding-occluded-windows'] as const;
 export async function waitForChromeEndpoint(endpoint:string,port:string,attempts=100,intervalMs=100):Promise<boolean>{
   for(let i=0;i<attempts;i++){
     try{
@@ -73,7 +75,7 @@ export class ManualChrome {
       // Launch Services hides only this new Chrome instance before presenting its
       // blank bootstrap window. The reader replaces it with windowless targets.
       if(display==='background'&&url!=='about:blank')throw new AppError('CHROME_MODE','Background Chrome starts with an empty reader only.');
-      const displayArgs=display==='background'?['--no-startup-window']:display?['--headless=new',url]:['--new-window',url];
+      const displayArgs=[...(display?BACKGROUND_EXECUTION_FLAGS:[]),...(display==='background'?['--no-startup-window']:display?['--headless=new',url]:['--new-window',url])];
       const resources=(process as NodeJS.Process&{resourcesPath?:string}).resourcesPath;
       const bundled=resources?join(resources,'chrome-background'):'';
       const helper=existsSync(bundled)?bundled:join(process.cwd(),'dist-electron/chrome-background');

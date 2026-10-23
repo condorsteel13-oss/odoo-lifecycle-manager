@@ -93,7 +93,8 @@ describe.skipIf(process.platform !== 'darwin' || !existsSync(CHROME))('native Ch
     expect(await invoke('release', f.profile, randomUUID(), f.port)).toEqual({ error: 'CHROME_PROFILE_BUSY' });
     expect(running(child.pid!)).toBe(true);
     expect(await invoke('release', f.profile, f.token, f.port)).toEqual({ status: 'released' });
-    expect(running(child.pid!)).toBe(false);
+    // The native helper observes exit before Node necessarily reaps its child.
+    await expect.poll(() => running(child.pid!), { timeout: 6000 }).toBe(false);
   }, 20000);
 
   it('does not mistake launchd-parented Chrome for an orphan while its background helper is alive', async () => {

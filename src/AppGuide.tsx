@@ -31,8 +31,8 @@ export function AppGuide() {
       <details>
         <summary>Automation <span>Run when databases approach expiry</span></summary>
         <p>Choose a threshold, check interval, and all or selected databases. For example, a threshold of 3 matches databases with 0–3 days remaining.</p>
-        <p><strong>Automatic monitoring</strong> refreshes and simulates only. <strong>Run lifecycle automatically</strong> enables real cycles. Choose the deletion setting, then click <strong>Save monitoring rule</strong>.</p>
-        <p><strong>Run lifecycle rule now</strong> checks the saved rule immediately. With Safe mode on, matching databases wait in the Live actions queue for review. Keep the app open and the Mac awake for scheduled checks.</p>
+        <p>Choose one <strong>Automation mode</strong>: <strong>Off</strong> stops scheduled checks, <strong>Monitor only</strong> refreshes and simulates without database changes, or <strong>Run lifecycle</strong> creates and activates copies. Choose whether to delete originals, then click <strong>Save automation</strong>. The saved status stays visible while you edit.</p>
+        <p><strong>Run lifecycle now</strong> runs the saved lifecycle rule immediately. Other modes offer <strong>Check now (read-only)</strong>. With Safe mode on, matching databases wait in the Live actions queue for review. Keep the app open and the Mac awake for scheduled checks. Turning automation off does not stop an active run or remove queued jobs.</p>
       </details>
       <details>
         <summary>Simulation history <span>Review plans without making changes</span></summary>

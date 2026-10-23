@@ -56,3 +56,21 @@
 .update-settings progress { width: 100%; height: 10px; accent-color: #6558d9; }
 .update-notice { display: flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid #d9d4f7; border-radius: 7px; color: #5845aa; background: #f5f3ff; font-size: 12px; cursor: pointer; }
 .update-notice:focus-visible { outline: 2px solid #6558d9; outline-offset: 3px; }
+
+/* Automation: a single mode, with the saved status separate from edits. */
+.automation-page{margin-top:24px}.automation-page .automation-layout{margin-top:20px;align-items:start}
+.automation-status{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:20px 23px;border:1px solid #dce6df;border-radius:9px;background:#f0f6f2}.automation-status.live{background:#fff8ee;border-color:#ead6b5}
+.automation-status .eyebrow{display:block;color:#637568}.automation-status h2{font-size:18px}.automation-status p{font-size:12px;color:#52665b;margin-top:7px;max-width:560px}.automation-schedule{display:flex;gap:10px;flex-shrink:0;color:#52665b}.automation-schedule strong,.automation-schedule span{display:block;font-size:11px;line-height:1.8}.automation-schedule span{color:#697a70}.automation-schedule>svg{margin-top:3px}
+.automation-page .form-label{font-size:12px;color:#344d40;gap:9px}.automation-page .form-label select{font-size:12px;color:#344d40;min-height:42px}.automation-page .number-field span{color:#687c70}.automation-page .form-label:first-child{margin-top:22px}.automation-help{font-size:12px;color:#67796e;line-height:1.6;margin-top:9px}
+.automation-timing{border:0;padding:0;margin:24px 0}.automation-timing legend,.automation-deletion h3{font-size:12px;font-weight:650;color:#344d40}.automation-timing .form-label{margin-top:14px}.automation-deletion{border-top:1px solid #e4ebe5;padding-top:20px}.automation-deletion .live-check{font-size:12px;margin:14px 0 0;align-items:flex-start}.automation-deletion input{flex-shrink:0}
+.automation-confirmations{display:flex;gap:10px;margin:20px 0;padding:13px;background:#f3f6f4;border-radius:7px;color:#3d5b49}.automation-confirmations>svg{flex-shrink:0}.automation-confirmations strong{font-size:12px}.automation-confirmations p{font-size:11px;color:#64776b;margin-top:5px}
+.automation-save p{font-size:11px;color:#765a2c;margin-bottom:10px}.automation-save .button{margin-top:4px}.automation-validation{font-size:12px;color:#a33232;margin-bottom:15px}
+.automation-outcome{padding:18px 23px;border-top:1px solid #e7ece6}.automation-outcome strong{font-size:12px}.automation-outcome p{font-size:12px;color:#52685a;margin-top:8px}.automation-empty{padding:28px 23px;text-align:center;color:#7e9586;border-top:1px solid #edf0e8}.automation-empty h3{margin:10px 0 8px}.automation-empty p{font-size:12px;max-width:310px;margin:auto}.automation-page .preview-footer p{font-size:12px;color:#64776b}.automation-page .preview-list strong{font-size:12px;color:#3c5746}.automation-page .preview-list span:not(.badge){font-size:11px;color:#738575}.automation-details{margin-top:18px;padding:17px 20px;border:1px solid #e0e7e1;border-radius:8px;background:#fcfdfc}.automation-details summary{font-size:12px;font-weight:600;cursor:pointer;color:#415e4c}.automation-details p{font-size:12px;color:#64766b;margin-top:12px}
+@media(max-width:1150px){.automation-status{align-items:flex-start;flex-direction:column;gap:14px}.automation-page .automation-layout{gap:18px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
+@media(max-width:900px){.automation-page .automation-layout{grid-template-columns:1fr}.automation-status{padding:18px}}
+
+.automation-page .preview-list>.automation-empty{display:block;padding:28px 23px}.automation-page .automation-empty p{margin:auto}
+
+.automation-page .automation-empty>svg{margin:0 auto}.automation-page .scope-list{max-height:180px;overflow-y:auto}
+.automation-timing{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);column-gap:12px}.automation-timing .form-label:nth-of-type(3),.automation-timing .scope-list{grid-column:1/-1}
+@media(max-width:1050px){.automation-timing{grid-template-columns:1fr}}

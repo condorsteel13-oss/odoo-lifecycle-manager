@@ -1,7 +1,8 @@
-import type { BrowserContext, Page } from 'playwright';
+import type { BrowserContext, CDPSession, Page } from 'playwright';
 import { AppError } from './errors';
 import { sameEmail } from './activation';
 import { mailSessionSchema, type MailSession } from './session-vault';
+import { readerDeadline } from './browser-deadline';
 
 export const MAIL_ORIGIN='https://mail.viamtl.com';
 const DOCUMENT='/__lifecycle_mail_reader__';
@@ -60,8 +61,10 @@ export async function captureRememberedMailSession(context:BrowserContext):Promi
 // scoped read endpoints can run in these inert documents; no mailbox scripts run.
 export class MailReader {
   private page:Page|null=null;
+  private cdp:CDPSession|null=null;
   private permit:{url:string;method:string;body?:string}|null=null;
-  constructor(private context:BrowserContext,private session:MailSession,private save:(session:MailSession)=>Promise<void>){}
+  get available(){return !!this.page&&!this.page.isClosed();}
+  constructor(private context:BrowserContext,private session:MailSession,private save:(session:MailSession)=>Promise<void>,private requestBudgetMs=25000){}
   async install(){
     await this.context.routeWebSocket('**/*',socket=>socket.close());
     await this.context.route('**/*',async route=>{
@@ -77,22 +80,29 @@ export class MailReader {
     });
     for(const page of this.context.pages())await page.close({runBeforeUnload:false});
     this.page=await this.context.newPage();
-    const cdp=await this.context.newCDPSession(this.page);
+    const cdp=await this.context.newCDPSession(this.page);this.cdp=cdp;
+    await cdp.send('Page.setWebLifecycleState',{state:'active'});
     await cdp.send('ServiceWorker.enable');await cdp.send('ServiceWorker.stopAllWorkers');
     await cdp.send('Network.enable');await cdp.send('Network.setBypassServiceWorker',{bypass:true});
     await this.page.goto(MAIL_ORIGIN+DOCUMENT,{waitUntil:'domcontentloaded',timeout:15000});
   }
   private async request(path:string,body?:Record<string,unknown>,auth=true){
     const url=MAIL_ORIGIN+path,method=body?'POST':'GET',text=body?JSON.stringify(body):undefined;
-    this.permit={url,method,body:text};
-    try{return await this.page!.evaluate(async({url,method,body,token})=>{
-      try{
-        const headers:Record<string,string>={};if(body)headers['Content-Type']='application/json';if(token)headers.Authorization='Bearer '+token;
-        const response=await fetch(url,{method,body,headers,redirect:'error',credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(20000)});
-        if(!response.headers.get('content-type')?.includes('application/json'))return {status:response.status,data:null};
-        const text=await response.text();return {status:response.status,data:text.length<=2_000_000?JSON.parse(text):null};
-      }catch{return {status:0,data:null};}
-    },{url,method,body:text,token:auth?this.session.accessToken:null});}
+    const page=this.page;
+    if(!page||page.isClosed()||!this.cdp)throw new AppError('MAIL_CONNECTION_TIMEOUT','The Viamail reader closed. Check saved connections before continuing. Your saved sign-in is retained.');
+    try{return await readerDeadline(page,async check=>{
+      await this.cdp!.send('Page.setWebLifecycleState',{state:'active'});check();
+      this.permit={url,method,body:text};
+      const result=await page.evaluate(async({url,method,body,token})=>{
+        try{
+          const headers:Record<string,string>={};if(body)headers['Content-Type']='application/json';if(token)headers.Authorization='Bearer '+token;
+          const response=await fetch(url,{method,body,headers,redirect:'error',credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(20000)});
+          if(!response.headers.get('content-type')?.includes('application/json'))return {status:response.status,data:null};
+          const text=await response.text();return {status:response.status,data:text.length<=2_000_000?JSON.parse(text):null};
+        }catch{return {status:0,data:null};}
+      },{url,method,body:text,token:auth?this.session.accessToken:null});
+      check();return result;
+    },this.requestBudgetMs,'MAIL_CONNECTION_TIMEOUT','Viamail did not finish its request within 25 seconds. Check saved connections and continue explicitly. Your saved sign-in is retained.');}
     finally{this.permit=null;}
   }
   private async refreshToken(){
