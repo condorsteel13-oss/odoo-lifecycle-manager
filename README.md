@@ -1,4 +1,4 @@
-# Odoo Lifecycle Manager — macOS, V1.8.7
+# Odoo Lifecycle Manager — macOS, V1.8.8
 
 Open **Settings → How to use Lifecycle Manager** for a quick start and explanations of all six workspace sections, Safe mode, parent deletion, and activation.
 
@@ -48,6 +48,14 @@ Background Chrome uses only app-owned profiles and inert reader pages. It disabl
 App-process deadlines prevent suspended browser JavaScript from waiting indefinitely: ordinary Odoo requests have 35 seconds and Viamail requests 25 seconds. Duplication allows a 120-second response within a 135-second overall request deadline. A timeout closes only the owned reader and reports an uncertain result if a mutation may have been sent; it never resubmits creation, activation or deletion. The saved activation-email delay still starts after copy availability or a confirmed resend.
 
 Automation has one mode selector: **Off** disables scheduled checks and live rules; **Monitor only** refreshes and simulates without database changes; **Run lifecycle** enables real copy/activation cycles. The saved status and next check stay visible while editing; changes take effect only after **Save automation**. The preview shows expiry and scope matches, not a guaranteed queue of jobs. Completed, dismissed and previously handled expiry events can be skipped. Last check records when an attempt started, not proof of successful completion. Turning automation off does not stop an active run or remove queued jobs.
+
+## Live action debugging and workspace selection
+
+In **Live actions → Live action log**, **Hide log** collapses the history without deleting it. This preference persists on this Mac; **Show log** restores the records. **Export debug log** remains available while hidden. Choose the last hour, today, last 7 days, last month, last 3 months, last year, all time, or custom dates, then **Export JSON** and choose a local file.
+
+Custom dates include the full start and end days in this Mac’s time zone. Relative month/year periods use calendar dates, clamped for shorter months. Exports select runs whose recorded lifetimes overlap the range and include each matching run’s full step history, plus diagnostics from this session within the range. Database names, UUIDs, expiry readings, statuses, safe error messages and workflow preferences are included. Sessions, raw HTML/responses, activation URLs, email addresses, mailbox contents, backup references and integrity notes are omitted. Exporting only reads local state, including during an active lifecycle.
+
+**Settings → Workspace → Use my Odoo workspace** switches between sample data and the real account using saved Odoo sign-in when valid. If it cannot reconnect, the sample workspace stays selected and Connection provides manual sign-in. Switching pauses both automatic rules, resets the old scope, and preserves Viamail, sessions and live history. Re-enable a reviewed rule explicitly after switching.
 
 ## Build from source
 

@@ -1,6 +1,7 @@
 import type { LifecycleProgress } from './progress';
 import type { WorkflowPreferences } from './workflow';
 import type { LiveRecord, LiveReview, LiveConfirmation } from './live';
+import type { LogRange } from '../domain/live-export';
 export const READ_ONLY_LABEL = 'Discovery and simulation are read-only. Safe mode confirms each live action.';
 export type Availability = 'available' | 'unavailable' | 'unknown';
 export type Source = 'demo' | 'odoo';
@@ -78,9 +79,10 @@ export interface AppAPI {
   activateCopy(recordId: string): Promise<void>;
   readActivationEmail(recordId: string): Promise<void>;
   state(): Promise<AppState>; connect(): Promise<void>; cancelConnection(): Promise<void>; finishLogin(): Promise<void>;
-  refresh(): Promise<void>; useDemo(): Promise<void>; disconnect(): Promise<void>; clearSession(): Promise<void>;
+  refresh(): Promise<void>; useDemo(): Promise<void>; useOdoo(): Promise<void>; disconnect(): Promise<void>; clearSession(): Promise<void>;
   simulate(ids: string[]): Promise<string[]>; saveSettings(settings: Settings): Promise<void>;
   runMonitor(): Promise<void>; exportHistory(ids?: string[]): Promise<string | null>;
+  exportLiveLog(range: LogRange): Promise<string | null>;
   subscribe(callback: (state: AppState) => void): () => void;
 }
 declare global { interface Window { lifecycle: AppAPI } }

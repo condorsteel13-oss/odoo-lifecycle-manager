@@ -22,9 +22,10 @@ const api: AppAPI = {
   readActivationEmail: id => ipcRenderer.invoke('app:live-read-email',id),
   state: () => ipcRenderer.invoke('app:state'), connect: () => ipcRenderer.invoke('app:connect'),
   cancelConnection: () => ipcRenderer.invoke('app:cancel'), finishLogin: () => ipcRenderer.invoke('app:finish-login'), refresh: () => ipcRenderer.invoke('app:refresh'),
-  useDemo: () => ipcRenderer.invoke('app:demo'), disconnect: () => ipcRenderer.invoke('app:disconnect'), clearSession: () => ipcRenderer.invoke('app:clear-session'),
+  useDemo: () => ipcRenderer.invoke('app:demo'), useOdoo: () => ipcRenderer.invoke('app:odoo-workspace'), disconnect: () => ipcRenderer.invoke('app:disconnect'), clearSession: () => ipcRenderer.invoke('app:clear-session'),
   simulate: ids => ipcRenderer.invoke('app:simulate', ids), saveSettings: settings => ipcRenderer.invoke('app:settings', settings),
   runMonitor: () => ipcRenderer.invoke('app:monitor'), exportHistory: ids => ipcRenderer.invoke('app:export', ids),
+  exportLiveLog: range => ipcRenderer.invoke('app:export-live-log', range),
   subscribe: callback => { const listener = (_event: unknown, state: AppState) => callback(state); ipcRenderer.on('app:state-changed', listener); return () => ipcRenderer.removeListener('app:state-changed', listener); },
 };
 contextBridge.exposeInMainWorld('lifecycle', Object.freeze(api));

@@ -6,7 +6,8 @@ import { writeFile } from 'node:fs/promises';
 import { AppService } from './service';
 import { LocalStore } from './store';
 import { exportReports } from '../src/domain/export';
-import { idsSchema } from './schemas';
+import { exportLiveLog } from '../src/domain/live-export';
+import { idsSchema, liveExportRangeSchema } from './schemas';
 import { AppError, safeError } from './errors';
 let window: BrowserWindow | null = null;
 let service: AppService;
@@ -73,6 +74,7 @@ else {
       'app:check-connections':()=>service.checkConnections(), 'app:browser-preferences':input=>service.saveBrowserPreferences(input),
       'app:state': () => service.getState(), 'app:connect': () => service.connect(), 'app:cancel': () => service.cancelConnection(), 'app:finish-login': () => service.finishLogin(),
       'app:refresh': () => service.refresh(), 'app:demo': () => service.useDemo(), 'app:disconnect': () => service.disconnect(),
+      'app:odoo-workspace': () => service.useOdoo(),
       'app:clear-session': () => service.clearSession(), 'app:settings': settings => service.saveSettings(settings),
       'app:simulate': ids => service.simulate(ids), 'app:monitor': () => service.runMonitor(),
       'app:live-prepare-duplicate': (id,name) => service.prepareDuplicate(id,name),
@@ -84,6 +86,16 @@ else {
       'app:live-retain-copy': id => service.retainCopy(id),
       'app:live-activate': id => service.activateCopy(id),
       'app:live-read-email': id => service.readActivationEmail(id),
+      'app:export-live-log': async (input: unknown) => {
+        const parsed = liveExportRangeSchema.safeParse(input);
+        if (!parsed.success) throw new AppError('INVALID_EXPORT', 'Choose a valid start and end date for the debug log.');
+        // Snapshot before the dialog: exporting never reads Odoo or changes a lifecycle.
+        const payload = exportLiveLog(service.getState(), parsed.data, app.getVersion());
+        const choice = await dialog.showSaveDialog(window!, { title: 'Export live action debug log', defaultPath: `odoo-live-actions-${new Date().toISOString().slice(0,10)}.json`, filters: [{ name: 'JSON debug log', extensions: ['json'] }] });
+        if (choice.canceled || !choice.filePath) return null;
+        await writeFile(choice.filePath, JSON.stringify(payload, null, 2), { mode: 0o600 });
+        return choice.filePath;
+      },
       'app:export': async (ids?: unknown) => {
         const parsed = ids === undefined ? undefined : idsSchema.safeParse(ids);
         if (parsed && !parsed.success) throw new AppError('INVALID_EXPORT', 'Select valid reports to export.');

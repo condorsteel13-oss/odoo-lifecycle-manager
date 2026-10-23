@@ -233,3 +233,50 @@ test('update UI shows download progress and blocks restart until lifecycle work 
  await page.getByRole('button',{name:'Restart to install 1.9.0',exact:true}).click();await expect(page.getByRole('alert')).toContainText('packaged');
  expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toEqual([]);
 });
+
+test('live log visibility persists and native date-filtered debug export preserves the log',async()=>{
+ const {LocalStore}=await import('../../electron/store');const {demoDiscovery}=await import('../../src/domain/demo');
+ directory=await mkdtemp(join(tmpdir(),'odoo-live-log-tools-'));const store=new LocalStore(join(directory,'data'));const {data}=await store.load();
+ const current=new Date(Date.now()-300000).toISOString(),old=new Date(Date.now()-400*86400000).toISOString(),original=demoDiscovery().databases[0];
+ const make=(at:string,name:string)=>({id:crypto.randomUUID(),createdAt:at,updatedAt:at,original,originalUuid:'22222222-2222-4222-8222-222222222222',copyName:name,phase:'copy-retained' as const,copy:null,copyUuid:null,verifiedAt:null,message:'Fixture outcome. token=PRIVATE_TOKEN https://fixture.odoo.com/confirm?token=PRIVATE_LINK',backupReference:'PRIVATE_BACKUP',integrityNotes:'PRIVATE_NOTES',progressEvents:[{step:'retained' as const,status:'done' as const,percent:100,at,message:'Fixture completed'}]});
+ await store.save({...data,discovery:demoDiscovery(),liveHistory:[make(current,'recent-copy'),make(old,'old-copy')]});
+ const launch=()=>electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
+ desktop=await launch();let page=await desktop.firstWindow();await page.getByRole('button',{name:'Live actions',exact:true}).click();
+ await expect(page.getByRole('heading',{name:/atlas-staging → recent-copy/})).toBeVisible();
+ await page.getByRole('button',{name:'Hide log',exact:true}).click();await expect(page.locator('#live-log-body')).toHaveCount(0);
+ await page.getByText('Export debug log',{exact:true}).click();await page.getByLabel('Log export date range').selectOption('hour');await expect(page.getByText(/1 matching run\./)).toBeVisible();
+ const exportPath=join(directory,'live-debug.json');
+ await desktop.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file});},exportPath);
+ await page.getByRole('button',{name:'Export JSON',exact:true}).click();await expect(page.getByRole('status').filter({hasText:'Debug log saved to'})).toBeVisible();
+ let exported=JSON.parse(await readFile(exportPath,'utf8'));expect(exported.records.map((r:any)=>r.copyName)).toEqual(['recent-copy']);expect(exported.records[0].progressEvents).toHaveLength(1);expect(JSON.stringify(exported)).not.toMatch(/PRIVATE_/);
+ const today=new Date().toLocaleDateString('en-CA');await page.getByLabel('Log export date range').selectOption('custom');
+ await expect(page.getByRole('button',{name:'Export JSON',exact:true})).toBeDisabled();
+ await page.getByLabel('Log export from date').fill(today);await page.getByLabel('Log export through date').fill(today);await page.getByRole('button',{name:'Export JSON',exact:true}).click();
+ await expect.poll(async()=>JSON.parse(await readFile(exportPath,'utf8')).range.from).toBe(new Date(new Date().setHours(0,0,0,0)).toISOString());
+ await page.getByLabel('Log export date range').selectOption('all');await page.getByRole('button',{name:'Export JSON',exact:true}).click();
+ await expect.poll(async()=>JSON.parse(await readFile(exportPath,'utf8')).records.length).toBe(2);
+ const before=await page.evaluate(()=>window.lifecycle.state());
+ await expect(page.evaluate(()=>window.lifecycle.exportLiveLog({from:'invalid',to:'invalid'}))).rejects.toThrow(/valid start and end/);
+ await desktop.evaluate(({dialog})=>{dialog.showSaveDialog=async()=>({canceled:true,filePath:''});});
+ expect(await page.evaluate(()=>window.lifecycle.exportLiveLog({from:'1970-01-01T00:00:00.000Z',to:new Date().toISOString()}))).toBeNull();
+ expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toEqual(before.liveHistory);
+ await page.evaluate(()=>window.scrollTo(0,document.body.scrollHeight));await page.screenshot({path:'test-results/live-log-hidden-export.png',fullPage:true});
+ await desktop.close();desktop=await launch();page=await desktop.firstWindow();await page.getByRole('button',{name:'Live actions',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Show log',exact:true})).toBeVisible();await page.getByRole('button',{name:'Show log',exact:true}).click();await expect(page.getByRole('heading',{name:/atlas-staging → recent-copy/})).toBeVisible();expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toHaveLength(2);
+});
+
+test('workspace switch pauses rules, persists sample selection, and explains reconnect failures',async()=>{
+ const {LocalStore}=await import('../../electron/store');const {demoDiscovery}=await import('../../src/domain/demo');
+ directory=await mkdtemp(join(tmpdir(),'odoo-workspace-setting-'));const store=new LocalStore(join(directory,'data'));const {data}=await store.load();
+ const discovery={...demoDiscovery(),source:'odoo' as const};
+ await store.save({...data,discovery,settings:{...data.settings,monitoringEnabled:true,lifecycleEnabled:true},lastAttemptAt:new Date().toISOString()});
+ const launch=()=>electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
+ desktop=await launch();let page=await desktop.firstWindow();await page.getByRole('button',{name:'Settings',exact:true}).click();
+ const control=page.getByRole('switch',{name:'Use my Odoo workspace',exact:true});await expect(control).toBeChecked();await control.click();await expect(control).not.toBeChecked();
+ expect((await page.evaluate(()=>window.lifecycle.state())).settings).toMatchObject({lifecycleEnabled:false,monitoringEnabled:false});
+ // Fail only the saved-login IPC in this isolated UI test; never contact an actual Odoo account.
+ await desktop.evaluate(({ipcMain})=>{ipcMain.removeHandler('app:odoo-workspace');ipcMain.handle('app:odoo-workspace',()=>{throw Error('Go to Connection → Connect to Odoo to sign in again. Automation remains off.');});});
+ await control.click();await expect(page.getByRole('alert')).toContainText('Connect to Odoo');await expect(control).not.toBeChecked();
+ await page.evaluate(()=>window.scrollTo(0,0));await page.screenshot({path:'test-results/workspace-settings.png',fullPage:true});
+ await desktop.close();desktop=await launch();page=await desktop.firstWindow();await page.getByRole('button',{name:'Settings',exact:true}).click();await expect(page.getByRole('switch',{name:'Use my Odoo workspace',exact:true})).not.toBeChecked();expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toEqual([]);
+});

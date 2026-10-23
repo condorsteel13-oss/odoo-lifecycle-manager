@@ -51,3 +51,25 @@ it('retains a verified visible login when the server rejects the headless handof
   await f.service.saveBrowserPreferences({headless:false});expect(f.service.getState().connection).toBe('connected');expect(f.browser.connect).toHaveBeenCalledTimes(1);
  }finally{await f.cleanup();}
 });
+
+it('switches sample to Odoo using only saved-session reads and leaves rules off across restart',async()=>{
+ const f=await fixture();try{
+  await f.service.connect();await f.service.connectMail();
+  await f.service.saveSettings({...f.service.getState().settings,monitoringEnabled:true,lifecycleEnabled:true,deleteAfterActivation:true});
+  await f.service.useDemo();const sample=f.service.getState();
+  await f.service.useOdoo();const actual=f.service.getState();
+  expect(f.browser.refresh).toHaveBeenCalledOnce();expect(f.browser.connect).toHaveBeenCalledOnce();
+  expect(actual).toMatchObject({discovery:{source:'odoo'},connection:'connected',savedConnections:{odoo:true,mail:true},settings:{monitoringEnabled:false,lifecycleEnabled:false,deleteAfterActivation:true},lastAttemptAt:null});
+  expect(actual.liveHistory).toEqual(sample.liveHistory);expect(actual.lifecycleQueue).toEqual(sample.lifecycleQueue);expect(actual.mailConnection).toEqual(sample.mailConnection);
+  await f.restart();expect(f.service.getState()).toMatchObject({discovery:{source:'odoo'},settings:{lifecycleEnabled:false,monitoringEnabled:false}});
+ }finally{await f.cleanup();}
+});
+it('a failed workspace reconnect preserves sample data and history and cannot start automation',async()=>{
+ const f=await fixture();try{
+  await f.service.connectMail();await f.service.saveSettings({...f.service.getState().settings,monitoringEnabled:true,lifecycleEnabled:true});
+  const before=f.service.getState();f.browser.refresh.mockRejectedValue(new AppError('SESSION_EXPIRED','Sign in again.'));
+  await expect(f.service.useOdoo()).rejects.toThrow(/Connection.*Connect to Odoo/);
+  const after=f.service.getState();expect(after.discovery).toEqual(before.discovery);expect(after.liveHistory).toEqual(before.liveHistory);
+  expect(after.settings).toMatchObject({monitoringEnabled:false,lifecycleEnabled:false});expect(after.mailConnection).toEqual(before.mailConnection);expect(f.browser.connect).not.toHaveBeenCalled();
+ }finally{await f.cleanup();}
+});

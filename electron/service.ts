@@ -167,6 +167,25 @@ export class AppService {
       this.state.connection = 'demo';
     });
   }
+  async useOdoo() {
+    return this.exclusive(async () => {
+      if(this.state.discovery?.source==='odoo')return;
+      this.live.cancel();
+      // Stop sample rules before any network work, including a failed reconnect.
+      await this.persist({settings:{...this.state.settings,monitoringEnabled:false,lifecycleEnabled:false,scope:'all',databaseIds:[]},lastAttemptAt:null});
+      this.state.connection='reading';this.emit();
+      try {
+        const discovery=await this.browser.refresh();
+        if(this.cancelled)throw new AppError('CANCELLED','Workspace switching was cancelled.');
+        if(discovery.source!=='odoo')throw new AppError('WORKSPACE_CONNECTION_REQUIRED','Connect to Odoo in Connection to open your real workspace.');
+        await this.persist({discovery,savedConnections:{...this.state.savedConnections,odoo:true}});
+        this.state.connection='connected';this.state.odooCheckedAt=new Date().toISOString();this.state.setupRequired=false;
+      } catch(error) {
+        this.state.connection='disconnected';this.state.odooCheckedAt=new Date().toISOString();this.log(error);
+        throw new AppError('WORKSPACE_CONNECTION_REQUIRED','Your saved Odoo workspace could not be opened. Go to Connection → Connect to Odoo to sign in again. Automation remains off.');
+      }
+    });
+  }
   async disconnect() {
     return this.exclusive(async () => {
       this.live.cancel();

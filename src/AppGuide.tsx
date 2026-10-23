@@ -42,6 +42,7 @@ export function AppGuide() {
         <summary>Live actions <span>Create, activate, and track real copies</span></summary>
         <p>Choose an original, review the proposed copy name, and click <strong>Run lifecycle</strong>. Or open <strong>Review scheduled lifecycle</strong> for a queued rule. With Safe mode on, type the original name, tick the authorization, and confirm creation.</p>
         <p>The app creates the copy, sends activation to the signed-in Odoo user if needed, waits for the configured email delay, reads that copy’s email, activates it, and verifies its expiry. It then keeps both databases or proceeds to deletion, according to the deletion setting.</p>
+        <p><strong>Hide log</strong> collapses the live action log without removing records. <strong>Export debug log</strong> offers recent periods or custom dates, with full step histories for matching runs. Exports omit sessions, activation URLs, emails and mailbox contents; database names and outcomes remain.</p>
         <p>The progress bar shows completed stages, not time remaining. Expand <strong>Step history</strong> for messages. If a step fails or needs attention, read the message before continuing. <strong>Stop lifecycle</strong> stops later steps; it cannot undo a request already sent.</p>
         <p><strong>Review duplication</strong> creates a copy only; activation is a separate step. Odoo determines the actual expiry, so a copy is not guaranteed extra days.</p>
       </details>
@@ -50,6 +51,7 @@ export function AppGuide() {
         <p>Set the activation email delay (default: 3 minutes) and copy name template, then click <strong>Save duplication settings</strong>. Use <code>{'{name}-copy'}</code> or <code>{'{name}-copy-{date}'}</code>; the app adds a number if the name is already used.</p>
         <p>The email delay starts when the copy is available, or after a resend if one is needed. Each new cycle keeps its saved delay. Queued copy names stay unchanged.</p>
         <p><strong>App updates</strong> checks GitHub and downloads new versions while the app is open. Click <strong>Restart to install</strong> when ready. Installation waits for all operations and open confirmations to finish. Install the app in Applications first; the previous app is kept as a backup. Unsigned builds may still need macOS approval.</p>
+        <p><strong>Workspace → Use my Odoo workspace</strong> switches between sample data and your Odoo account, reusing saved sign-in when valid. Switching turns automation off; review and save your rule to enable it again. If the sign-in has expired, reconnect in Connection.</p>
         <p>Also choose Safe mode and browser visibility here. Closing browsers keeps saved sessions; clearing sessions requires signing in again. Reports and the live action log stay on this Mac. Diagnostics explain connection or workflow problems.</p>
       </details>
     </div>
