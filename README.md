@@ -1,4 +1,4 @@
-# Odoo Lifecycle Manager — macOS, V1.8.8
+# Odoo Lifecycle Manager — macOS, V1.8.9
 
 Open **Settings → How to use Lifecycle Manager** for a quick start and explanations of all six workspace sections, Safe mode, parent deletion, and activation.
 
@@ -55,7 +55,7 @@ In **Live actions → Live action log**, **Hide log** collapses the history with
 
 Custom dates include the full start and end days in this Mac’s time zone. Relative month/year periods use calendar dates, clamped for shorter months. Exports select runs whose recorded lifetimes overlap the range and include each matching run’s full step history, plus diagnostics from this session within the range. Database names, UUIDs, expiry readings, statuses, safe error messages and workflow preferences are included. Sessions, raw HTML/responses, activation URLs, email addresses, mailbox contents, backup references and integrity notes are omitted. Exporting only reads local state, including during an active lifecycle.
 
-**Settings → Workspace → Use my Odoo workspace** switches between sample data and the real account using saved Odoo sign-in when valid. If it cannot reconnect, the sample workspace stays selected and Connection provides manual sign-in. Switching pauses both automatic rules, resets the old scope, and preserves Viamail, sessions and live history. Re-enable a reviewed rule explicitly after switching.
+The **Sample / Odoo switch above the Lifecycle logo** switches between sample data and the real account using saved Odoo sign-in when valid. If it cannot reconnect, the sample workspace stays selected and Connection provides manual sign-in. Switching pauses both automatic rules, resets the old scope, and preserves Viamail, sessions and live history. Re-enable a reviewed rule explicitly after switching.
 
 ## Build from source
 

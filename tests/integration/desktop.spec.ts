@@ -265,15 +265,31 @@ test('live log visibility persists and native date-filtered debug export preserv
  await expect(page.getByRole('button',{name:'Show log',exact:true})).toBeVisible();await page.getByRole('button',{name:'Show log',exact:true}).click();await expect(page.getByRole('heading',{name:/atlas-staging → recent-copy/})).toBeVisible();expect((await page.evaluate(()=>window.lifecycle.state())).liveHistory).toHaveLength(2);
 });
 
-test('workspace switch pauses rules, persists sample selection, and explains reconnect failures',async()=>{
+test('sidebar workspace switch is available above the logo, pauses rules, and persists selection',async()=>{
  const {LocalStore}=await import('../../electron/store');const {demoDiscovery}=await import('../../src/domain/demo');
  directory=await mkdtemp(join(tmpdir(),'odoo-workspace-setting-'));const store=new LocalStore(join(directory,'data'));const {data}=await store.load();
  const discovery={...demoDiscovery(),source:'odoo' as const};
  await store.save({...data,discovery,settings:{...data.settings,monitoringEnabled:true,lifecycleEnabled:true},lastAttemptAt:new Date().toISOString()});
  const launch=()=>electron.launch({args:[resolve('.')],env:{...process.env,ELECTRON_RUN_AS_NODE:'',LIFECYCLE_TEST_DATA:directory}});
  desktop=await launch();let page=await desktop.firstWindow();await page.getByRole('button',{name:'Settings',exact:true}).click();
- const control=page.getByRole('switch',{name:'Use my Odoo workspace',exact:true});await expect(control).toBeChecked();await control.click();await expect(control).not.toBeChecked();
+ const control=page.getByRole('switch',{name:'Use my Odoo workspace',exact:true});await expect(control).toBeChecked();
+ const switchBox=await control.boundingBox(),brandBox=await page.locator('.sidebar .brand').boundingBox();
+ expect(switchBox!.y+switchBox!.height).toBeLessThan(brandBox!.y);
+ await expect(page.getByRole('switch',{name:'Use my Odoo workspace',exact:true})).toHaveCount(1);
+ await page.screenshot({path:'test-results/sidebar-workspace-switch.png'});
+ const before=await page.evaluate(()=>window.lifecycle.state());
+ await desktop.evaluate(({BrowserWindow},value)=>BrowserWindow.getAllWindows()[0].webContents.send('app:state-changed',{...value,busy:true}),before);
+ await expect(control).toBeDisabled();
+ await desktop.evaluate(({BrowserWindow},value)=>BrowserWindow.getAllWindows()[0].webContents.send('app:state-changed',value),before);
+ await expect(control).toBeEnabled();await control.click();await expect(control).not.toBeChecked();
  expect((await page.evaluate(()=>window.lifecycle.state())).settings).toMatchObject({lifecycleEnabled:false,monitoringEnabled:false});
+ for(const screen of ['Databases','Connection','Automation','Simulation history','Live actions','Settings']){
+  await page.getByRole('button',{name:screen==='Databases'?/^Databases/:screen,exact:screen!=='Databases'}).click();
+  await expect(control).toBeVisible();await expect(control).not.toBeChecked();
+ }
+ await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1050,740));
+ await expect.poll(async()=>{const box=await page.locator('.sidebar .version').boundingBox();return box!.y+box!.height<=(await page.evaluate(()=>window.innerHeight));}).toBe(true);
+ await page.screenshot({path:'test-results/sidebar-workspace-switch-small.png'});
  // Fail only the saved-login IPC in this isolated UI test; never contact an actual Odoo account.
  await desktop.evaluate(({ipcMain})=>{ipcMain.removeHandler('app:odoo-workspace');ipcMain.handle('app:odoo-workspace',()=>{throw Error('Go to Connection → Connect to Odoo to sign in again. Automation remains off.');});});
  await control.click();await expect(page.getByRole('alert')).toContainText('Connect to Odoo');await expect(control).not.toBeChecked();
